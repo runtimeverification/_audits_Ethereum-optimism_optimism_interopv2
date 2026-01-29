@@ -11264,6 +11264,7 @@ dependencies = [
  "alloy-consensus",
  "alloy-eips",
  "alloy-primitives",
+ "alloy-rpc-types",
  "alloy-rpc-types-engine",
  "brotli",
  "derive_more",

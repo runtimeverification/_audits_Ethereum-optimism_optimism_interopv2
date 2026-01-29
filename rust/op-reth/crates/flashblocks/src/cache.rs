@@ -4,16 +4,16 @@
 //! and intelligently selects which sequence to build based on the local chain tip.
 
 use crate::{
+    FlashBlock, FlashBlockCompleteSequence, PendingFlashBlock,
     pending_state::PendingBlockState,
     sequence::{FlashBlockPendingSequence, SequenceExecutionOutcome},
     validation::{CanonicalBlockReconciler, ReconciliationStrategy, ReorgDetector},
     worker::BuildArgs,
-    FlashBlock, FlashBlockCompleteSequence, PendingFlashBlock,
 };
 use alloy_eips::eip2718::WithEncoded;
 use alloy_primitives::B256;
 use reth_primitives_traits::{
-    transaction::TxHashRef, NodePrimitives, Recovered, SignedTransaction,
+    NodePrimitives, Recovered, SignedTransaction, transaction::TxHashRef,
 };
 use reth_revm::cached::CachedReads;
 use ringbuffer::{AllocRingBuffer, RingBuffer};
@@ -133,7 +133,7 @@ impl<T: SignedTransaction> SequenceManager<T> {
             None
         };
 
-        self.completed_cache.push((completed, txs));
+        self.completed_cache.enqueue((completed, txs));
 
         self.cached_min_block_number = match self.cached_min_block_number {
             None => Some(block_number),
@@ -238,11 +238,11 @@ impl<T: SignedTransaction> SequenceManager<T> {
         // compute the state root, causing FlashblockConsensusClient to lack precomputed state for
         // engine_newPayload. This is safe: we still have op-node as backstop to maintain
         // chain progression.
-        let block_time_ms = (base.timestamp - local_tip_timestamp) * 1000;
+        let block_time_ms = base.timestamp.saturating_sub(local_tip_timestamp) * 1000;
         let expected_final_flashblock = block_time_ms / FLASHBLOCK_BLOCK_TIME;
-        let compute_state_root = self.compute_state_root &&
-            last_flashblock.diff.state_root.is_zero() &&
-            last_flashblock.index >= expected_final_flashblock.saturating_sub(1);
+        let compute_state_root = self.compute_state_root
+            && last_flashblock.diff.state_root.is_zero()
+            && last_flashblock.index >= expected_final_flashblock.saturating_sub(1);
 
         trace!(
             target: "flashblocks",
@@ -681,6 +681,23 @@ mod tests {
     }
 
     #[test]
+    fn test_compute_state_root_with_timestamp_skew_does_not_underflow() {
+        let mut manager: SequenceManager<OpTxEnvelope> = SequenceManager::new(true);
+        let factory = TestFlashBlockFactory::new();
+
+        let fb0 = factory.flashblock_at(0).state_root(B256::ZERO).build();
+        let parent_hash = fb0.base.as_ref().unwrap().parent_hash;
+        let base_timestamp = fb0.base.as_ref().unwrap().timestamp;
+        manager.insert_flashblock(fb0).unwrap();
+
+        // Local tip timestamp can be ahead briefly in skewed/out-of-order conditions.
+        // This should not panic due to arithmetic underflow.
+        let args =
+            manager.next_buildable_args::<OpPrimitives>(parent_hash, base_timestamp + 1, None);
+        assert!(args.is_some());
+    }
+
+    #[test]
     fn test_cache_ring_buffer_evicts_oldest() {
         let mut manager: SequenceManager<OpTxEnvelope> = SequenceManager::new(true);
         let factory = TestFlashBlockFactory::new();
@@ -870,6 +887,7 @@ mod tests {
             canonical_anchor_hash: parent_hash,
             execution_outcome: Arc::new(BlockExecutionOutput::default()),
             cached_reads: CachedReads::default(),
+            sealed_header: None,
         };
 
         // With pending parent state, should return args for speculative building
@@ -915,6 +933,7 @@ mod tests {
             canonical_anchor_hash: parent_hash,
             execution_outcome: Arc::new(BlockExecutionOutput::default()),
             cached_reads: CachedReads::default(),
+            sealed_header: None,
         };
 
         // Should find cached sequence for block 100 (whose parent is block_99_hash)
@@ -949,6 +968,7 @@ mod tests {
             canonical_anchor_hash: pending_parent_hash,
             execution_outcome: Arc::new(BlockExecutionOutput::default()),
             cached_reads: CachedReads::default(),
+            sealed_header: None,
         };
 
         // Local tip matches the sequence parent (canonical mode should take priority)
@@ -1119,42 +1139,6 @@ mod tests {
     }
 
     #[test]
-    fn test_get_transaction_hashes_for_pending_block() {
-        let mut manager: SequenceManager<OpTxEnvelope> = SequenceManager::new(true);
-        let factory = TestFlashBlockFactory::new();
-
-        // Create flashblock without transactions (empty tx list is valid)
-        let fb0 = factory.flashblock_at(0).build();
-        manager.insert_flashblock(fb0).unwrap();
-
-        // Should find (empty) transaction hashes for block 100
-        let hashes = manager.get_transaction_hashes_for_block(100);
-        assert!(hashes.is_empty()); // No transactions in this flashblock
-    }
-
-    #[test]
-    fn test_get_transaction_hashes_for_cached_block() {
-        let mut manager: SequenceManager<OpTxEnvelope> = SequenceManager::new(true);
-        let factory = TestFlashBlockFactory::new();
-
-        // Create first flashblock for block 100
-        let fb0 = factory.flashblock_at(0).build();
-        manager.insert_flashblock(fb0.clone()).unwrap();
-
-        // Create second flashblock for block 101 (caches block 100)
-        let fb1 = factory.flashblock_for_next_block(&fb0).build();
-        manager.insert_flashblock(fb1).unwrap();
-
-        // Should find transaction hashes for cached block 100
-        let hashes = manager.get_transaction_hashes_for_block(100);
-        assert!(hashes.is_empty()); // No transactions in these flashblocks
-
-        // Should find transaction hashes for pending block 101
-        let hashes = manager.get_transaction_hashes_for_block(101);
-        assert!(hashes.is_empty()); // No transactions in these flashblocks
-    }
-
-    #[test]
     fn test_no_false_reorg_for_untracked_block() {
         let mut manager: SequenceManager<OpTxEnvelope> = SequenceManager::new(true);
         let factory = TestFlashBlockFactory::new();
@@ -1208,5 +1192,41 @@ mod tests {
         // State should be cleared
         assert!(manager.pending().block_number().is_none());
         assert!(manager.completed_cache.is_empty());
+    }
+
+    #[test]
+    fn test_get_transaction_hashes_for_pending_block() {
+        let mut manager: SequenceManager<OpTxEnvelope> = SequenceManager::new(true);
+        let factory = TestFlashBlockFactory::new();
+
+        // Create flashblock without transactions (empty tx list is valid)
+        let fb0 = factory.flashblock_at(0).build();
+        manager.insert_flashblock(fb0).unwrap();
+
+        // Should find (empty) transaction hashes for block 100
+        let hashes = manager.get_transaction_hashes_for_block(100);
+        assert!(hashes.is_empty()); // No transactions in this flashblock
+    }
+
+    #[test]
+    fn test_get_transaction_hashes_for_cached_block() {
+        let mut manager: SequenceManager<OpTxEnvelope> = SequenceManager::new(true);
+        let factory = TestFlashBlockFactory::new();
+
+        // Create first flashblock for block 100
+        let fb0 = factory.flashblock_at(0).build();
+        manager.insert_flashblock(fb0.clone()).unwrap();
+
+        // Create second flashblock for block 101 (caches block 100)
+        let fb1 = factory.flashblock_for_next_block(&fb0).build();
+        manager.insert_flashblock(fb1).unwrap();
+
+        // Should find transaction hashes for cached block 100
+        let hashes = manager.get_transaction_hashes_for_block(100);
+        assert!(hashes.is_empty()); // No transactions in these flashblocks
+
+        // Should find transaction hashes for pending block 101
+        let hashes = manager.get_transaction_hashes_for_block(101);
+        assert!(hashes.is_empty()); // No transactions in these flashblocks
     }
 }

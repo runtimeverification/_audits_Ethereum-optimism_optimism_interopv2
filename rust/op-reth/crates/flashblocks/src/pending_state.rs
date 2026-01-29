@@ -6,7 +6,7 @@
 
 use alloy_primitives::B256;
 use reth_execution_types::BlockExecutionOutput;
-use reth_primitives_traits::NodePrimitives;
+use reth_primitives_traits::{HeaderTy, NodePrimitives, SealedHeader};
 use reth_revm::cached::CachedReads;
 use std::sync::Arc;
 
@@ -18,7 +18,9 @@ use std::sync::Arc;
 /// - This allows continuous flashblock processing without waiting for P2P
 #[derive(Debug, Clone)]
 pub struct PendingBlockState<N: NodePrimitives> {
-    /// Hash of the block that was built (the pending block's hash).
+    /// Block hash from the latest flashblock payload (`diff.block_hash`) for this built block.
+    ///
+    /// This hash is used to match subsequent flashblock sequences by `parent_hash`.
     pub block_hash: B256,
     /// Block number that was built.
     pub block_number: u64,
@@ -35,6 +37,10 @@ pub struct PendingBlockState<N: NodePrimitives> {
     pub execution_outcome: Arc<BlockExecutionOutput<N::Receipt>>,
     /// Cached reads from execution for reuse.
     pub cached_reads: CachedReads,
+    /// Sealed header for this built block.
+    ///
+    /// Used as the parent header for speculative child builds.
+    pub sealed_header: Option<SealedHeader<HeaderTy<N>>>,
 }
 
 impl<N: NodePrimitives> PendingBlockState<N> {
@@ -54,7 +60,14 @@ impl<N: NodePrimitives> PendingBlockState<N> {
             canonical_anchor_hash,
             execution_outcome,
             cached_reads,
+            sealed_header: None,
         }
+    }
+
+    /// Attaches a sealed header for use as parent context in speculative builds.
+    pub fn with_sealed_header(mut self, sealed_header: SealedHeader<HeaderTy<N>>) -> Self {
+        self.sealed_header = Some(sealed_header);
+        self
     }
 }
 
@@ -119,6 +132,7 @@ mod tests {
             canonical_anchor_hash: parent_hash,
             execution_outcome: Arc::new(BlockExecutionOutput::default()),
             cached_reads: CachedReads::default(),
+            sealed_header: None,
         };
         registry.record_build(state);
 
@@ -140,6 +154,7 @@ mod tests {
             canonical_anchor_hash: parent_hash,
             execution_outcome: Arc::new(BlockExecutionOutput::default()),
             cached_reads: CachedReads::default(),
+            sealed_header: None,
         };
         registry.record_build(state);
 
@@ -159,6 +174,7 @@ mod tests {
             canonical_anchor_hash: parent_hash,
             execution_outcome: Arc::new(BlockExecutionOutput::default()),
             cached_reads: CachedReads::default(),
+            sealed_header: None,
         };
         registry.record_build(state);
         assert!(registry.current().is_some());
@@ -190,6 +206,7 @@ mod tests {
             canonical_anchor_hash: canonical_anchor, // Same as parent for canonical build
             execution_outcome: Arc::new(BlockExecutionOutput::default()),
             cached_reads: CachedReads::default(),
+            sealed_header: None,
         };
 
         // Verify block N's anchor is the canonical block
@@ -205,6 +222,7 @@ mod tests {
             canonical_anchor_hash: state_n.canonical_anchor_hash, // Forwarded from N
             execution_outcome: Arc::new(BlockExecutionOutput::default()),
             cached_reads: CachedReads::default(),
+            sealed_header: None,
         };
 
         // Verify N+1's anchor is still the canonical block, NOT block N
@@ -220,6 +238,7 @@ mod tests {
             canonical_anchor_hash: state_n1.canonical_anchor_hash, // Forwarded from N+1
             execution_outcome: Arc::new(BlockExecutionOutput::default()),
             cached_reads: CachedReads::default(),
+            sealed_header: None,
         };
 
         // Verify N+2's anchor is STILL the original canonical block
