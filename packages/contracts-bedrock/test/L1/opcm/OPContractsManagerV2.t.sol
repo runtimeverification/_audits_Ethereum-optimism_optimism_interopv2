@@ -1173,13 +1173,13 @@ contract OPContractsManagerV2_DevFeatureBitmap_Test is OPContractsManagerV2_Test
     }
 }
 
-/// @title OPContractsManagerV2_RespectedGameTypeCannonKona_Test
+/// @title OPContractsManagerV2_FeatRespectedGameTypeCannonKona_Test
 /// @notice Tests the RESPECTED_GAME_TYPE_CANNON_KONA dev feature flag.
 // TODO(#19116): After Kona audit, update tests for CANNON_KONA as respected game type:
-// - Allowed: CANNON_KONA (flag overrides input)
-// - Rejected: CANNON, PERMISSIONED_CANNON (no longer valid when flag is on)
+// - test_deploy_cannonKonaRespectedGameType_succeeds (proves flag allows CANNON_KONA)
+// - test_deploy_invalidRespectedGameType_reverts (rejects CANNON/PERMISSIONED_CANNON)
 // - Add upgrade path test
-contract OPContractsManagerV2_RespectedGameTypeCannonKona_Test is OPContractsManagerV2_TestInit {
+contract OPContractsManagerV2_FeatRespectedGameTypeCannonKona_Test is OPContractsManagerV2_TestInit {
     /// @notice Default deploy config.
     IOPContractsManagerV2.FullConfig deployConfig;
 
@@ -1249,7 +1249,7 @@ contract OPContractsManagerV2_RespectedGameTypeCannonKona_Test is OPContractsMan
     }
 
     /// @notice Flag ON + input CANNON → deploys successfully with CANNON as respected type.
-    function test_deploy_flagOn_allowsCannon_succeeds() public {
+    function test_deploy_cannonRespectedGameType_succeeds() public {
         deployConfig.startingRespectedGameType = GameTypes.CANNON;
         IOPContractsManagerV2.ChainContracts memory cts = runDeployV2(deployConfig);
         assertEq(
@@ -1260,7 +1260,7 @@ contract OPContractsManagerV2_RespectedGameTypeCannonKona_Test is OPContractsMan
     }
 
     /// @notice Flag ON + input PERMISSIONED_CANNON → deploys successfully with PERMISSIONED_CANNON.
-    function test_deploy_flagOn_allowsPermissionedCannon_succeeds() public {
+    function test_deploy_permissionedCannonRespectedGameType_succeeds() public {
         deployConfig.startingRespectedGameType = GameTypes.PERMISSIONED_CANNON;
         IOPContractsManagerV2.ChainContracts memory cts = runDeployV2(deployConfig);
         assertEq(
@@ -1271,7 +1271,7 @@ contract OPContractsManagerV2_RespectedGameTypeCannonKona_Test is OPContractsMan
     }
 
     /// @notice Flag ON + input CANNON_KONA → reverts. Not yet allowed until Kona audit completes.
-    function test_deploy_flagOn_rejectsCannonKona_reverts() public {
+    function test_deploy_invalidRespectedGameType_reverts() public {
         deployConfig.startingRespectedGameType = GameTypes.CANNON_KONA;
         // nosemgrep: sol-style-use-abi-encodecall
         runDeployV2(
