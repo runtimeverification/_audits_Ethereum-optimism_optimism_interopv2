@@ -811,6 +811,11 @@
   },
   {
     "inputs": [],
+    "name": "OPContractsManagerV2_InvalidRespectedGameType",
+    "type": "error"
+  },
+  {
+    "inputs": [],
     "name": "OPContractsManagerV2_InvalidUpgradeInput",
     "type": "error"
   },

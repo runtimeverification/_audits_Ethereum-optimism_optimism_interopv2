@@ -1173,6 +1173,114 @@ contract OPContractsManagerV2_DevFeatureBitmap_Test is OPContractsManagerV2_Test
     }
 }
 
+/// @title OPContractsManagerV2_RespectedGameTypeCannonKona_Test
+/// @notice Tests the RESPECTED_GAME_TYPE_CANNON_KONA dev feature flag.
+// TODO(#19116): After Kona audit, update tests for CANNON_KONA as respected game type:
+// - Allowed: CANNON_KONA (flag overrides input)
+// - Rejected: CANNON, PERMISSIONED_CANNON (no longer valid when flag is on)
+// - Add upgrade path test
+contract OPContractsManagerV2_RespectedGameTypeCannonKona_Test is OPContractsManagerV2_TestInit {
+    /// @notice Default deploy config.
+    IOPContractsManagerV2.FullConfig deployConfig;
+
+    /// @notice Sets up the test. Flag must be set BEFORE super.setUp() because devFeatureBitmap is
+    ///         immutable in OPContractsManagerContainer.
+    function setUp() public override {
+        setDevFeatureEnabled(DevFeatures.RESPECTED_GAME_TYPE_CANNON_KONA);
+        super.setUp();
+
+        // Set up default deploy config.
+        deployConfig.saltMixer = "test-salt-mixer-cannon-kona";
+        deployConfig.superchainConfig = superchainConfig;
+        deployConfig.proxyAdminOwner = makeAddr("proxyAdminOwner");
+        deployConfig.systemConfigOwner = makeAddr("systemConfigOwner");
+        deployConfig.unsafeBlockSigner = makeAddr("unsafeBlockSigner");
+        deployConfig.batcher = makeAddr("batcher");
+        deployConfig.startingAnchorRoot = Proposal({ root: Hash.wrap(bytes32(hex"1234")), l2SequenceNumber: 123 });
+        deployConfig.startingRespectedGameType = GameTypes.CANNON;
+        deployConfig.basefeeScalar = 1368;
+        deployConfig.blobBasefeeScalar = 801949;
+        deployConfig.gasLimit = 60_000_000;
+        deployConfig.l2ChainId = 999_999_998;
+        deployConfig.resourceConfig = IResourceMetering.ResourceConfig({
+            maxResourceLimit: 20_000_000,
+            elasticityMultiplier: 10,
+            baseFeeMaxChangeDenominator: 8,
+            minimumBaseFee: 1 gwei,
+            systemTxMaxGas: 1_000_000,
+            maximumBaseFee: type(uint128).max
+        });
+
+        // Set up dispute game configs.
+        address initialChallenger = DisputeGames.permissionedGameChallenger(disputeGameFactory);
+        address initialProposer = DisputeGames.permissionedGameProposer(disputeGameFactory);
+        deployConfig.disputeGameConfigs.push(
+            IOPContractsManagerUtils.DisputeGameConfig({
+                enabled: true,
+                initBond: DEFAULT_DISPUTE_GAME_INIT_BOND,
+                gameType: GameTypes.CANNON,
+                gameArgs: abi.encode(IOPContractsManagerUtils.FaultDisputeGameConfig({ absolutePrestate: cannonPrestate }))
+            })
+        );
+        deployConfig.disputeGameConfigs.push(
+            IOPContractsManagerUtils.DisputeGameConfig({
+                enabled: true,
+                initBond: DEFAULT_DISPUTE_GAME_INIT_BOND,
+                gameType: GameTypes.PERMISSIONED_CANNON,
+                gameArgs: abi.encode(
+                    IOPContractsManagerUtils.PermissionedDisputeGameConfig({
+                        absolutePrestate: cannonPrestate,
+                        proposer: initialProposer,
+                        challenger: initialChallenger
+                    })
+                )
+            })
+        );
+        deployConfig.disputeGameConfigs.push(
+            IOPContractsManagerUtils.DisputeGameConfig({
+                enabled: true,
+                initBond: DEFAULT_DISPUTE_GAME_INIT_BOND,
+                gameType: GameTypes.CANNON_KONA,
+                gameArgs: abi.encode(
+                    IOPContractsManagerUtils.FaultDisputeGameConfig({ absolutePrestate: cannonKonaPrestate })
+                )
+            })
+        );
+    }
+
+    /// @notice Flag ON + input CANNON → deploys successfully with CANNON as respected type.
+    function test_deploy_flagOn_allowsCannon_succeeds() public {
+        deployConfig.startingRespectedGameType = GameTypes.CANNON;
+        IOPContractsManagerV2.ChainContracts memory cts = runDeployV2(deployConfig);
+        assertEq(
+            cts.anchorStateRegistry.respectedGameType().raw(),
+            GameTypes.CANNON.raw(),
+            "respected game type should be CANNON"
+        );
+    }
+
+    /// @notice Flag ON + input PERMISSIONED_CANNON → deploys successfully with PERMISSIONED_CANNON.
+    function test_deploy_flagOn_allowsPermissionedCannon_succeeds() public {
+        deployConfig.startingRespectedGameType = GameTypes.PERMISSIONED_CANNON;
+        IOPContractsManagerV2.ChainContracts memory cts = runDeployV2(deployConfig);
+        assertEq(
+            cts.anchorStateRegistry.respectedGameType().raw(),
+            GameTypes.PERMISSIONED_CANNON.raw(),
+            "respected game type should be PERMISSIONED_CANNON"
+        );
+    }
+
+    /// @notice Flag ON + input CANNON_KONA → reverts. Not yet allowed until Kona audit completes.
+    function test_deploy_flagOn_rejectsCannonKona_reverts() public {
+        deployConfig.startingRespectedGameType = GameTypes.CANNON_KONA;
+        // nosemgrep: sol-style-use-abi-encodecall
+        runDeployV2(
+            deployConfig,
+            abi.encodeWithSelector(IOPContractsManagerV2.OPContractsManagerV2_InvalidRespectedGameType.selector)
+        );
+    }
+}
+
 /// @title OPContractsManagerV2_Migrate_Test
 /// @notice Tests the `migrate` function of the `OPContractsManagerV2` contract.
 contract OPContractsManagerV2_Migrate_Test is OPContractsManagerV2_TestInit {

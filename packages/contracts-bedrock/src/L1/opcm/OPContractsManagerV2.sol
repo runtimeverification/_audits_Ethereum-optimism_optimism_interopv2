@@ -132,6 +132,9 @@ contract OPContractsManagerV2 is ISemver, OPContractsManagerUtilsCaller {
     /// @notice Thrown when an invalid upgrade sequence is provided.
     error OPContractsManagerV2_InvalidUpgradeSequence(string _lastVersion, string _thisVersion);
 
+    /// @notice Thrown when the respected game type is not an allowed type for the current feature flag state.
+    error OPContractsManagerV2_InvalidRespectedGameType();
+
     /// @notice Address of the Standard Validator for this OPCM release.
     IOPContractsManagerStandardValidator public immutable opcmStandardValidator;
 
@@ -147,9 +150,9 @@ contract OPContractsManagerV2 is ISemver, OPContractsManagerUtilsCaller {
     ///         - Major bump: New required sequential upgrade
     ///         - Minor bump: Replacement OPCM for same upgrade
     ///         - Patch bump: Development changes (expected for normal dev work)
-    /// @custom:semver 7.0.8
+    /// @custom:semver 7.0.9
     function version() public pure returns (string memory) {
-        return "7.0.8";
+        return "7.0.9";
     }
 
     /// @param _standardValidator The standard validator for this OPCM release.
@@ -823,6 +826,17 @@ contract OPContractsManagerV2 is ISemver, OPContractsManagerUtilsCaller {
             impls.delayedWETHImpl,
             abi.encodeCall(IDelayedWETH.initialize, (_cts.systemConfig))
         );
+
+        // Infrastructure for switching the respected game type to CANNON_KONA.
+        // TODO(#19116): After Kona audit, replace the check below with:
+        //   _cfg.startingRespectedGameType = GameTypes.CANNON_KONA;
+        //   and validate that CANNON_KONA is enabled in disputeGameConfigs.
+        if (isDevFeatureEnabled(DevFeatures.RESPECTED_GAME_TYPE_CANNON_KONA)) {
+            GameType gt = _cfg.startingRespectedGameType;
+            if (gt.raw() != GameTypes.CANNON.raw() && gt.raw() != GameTypes.PERMISSIONED_CANNON.raw()) {
+                revert OPContractsManagerV2_InvalidRespectedGameType();
+            }
+        }
 
         // Update the AnchorStateRegistry.
         _upgrade(
