@@ -1216,10 +1216,10 @@ contract OPContractsManagerV2_FeatRespectedGameTypeCannonKona_Test is OPContract
         address initialProposer = DisputeGames.permissionedGameProposer(disputeGameFactory);
         deployConfig.disputeGameConfigs.push(
             IOPContractsManagerUtils.DisputeGameConfig({
-                enabled: true,
-                initBond: DEFAULT_DISPUTE_GAME_INIT_BOND,
+                enabled: false,
+                initBond: 0,
                 gameType: GameTypes.CANNON,
-                gameArgs: abi.encode(IOPContractsManagerUtils.FaultDisputeGameConfig({ absolutePrestate: cannonPrestate }))
+                gameArgs: bytes("")
             })
         );
         deployConfig.disputeGameConfigs.push(
@@ -1238,20 +1238,23 @@ contract OPContractsManagerV2_FeatRespectedGameTypeCannonKona_Test is OPContract
         );
         deployConfig.disputeGameConfigs.push(
             IOPContractsManagerUtils.DisputeGameConfig({
-                enabled: true,
-                initBond: DEFAULT_DISPUTE_GAME_INIT_BOND,
+                enabled: false,
+                initBond: 0,
                 gameType: GameTypes.CANNON_KONA,
-                gameArgs: abi.encode(
-                    IOPContractsManagerUtils.FaultDisputeGameConfig({ absolutePrestate: cannonKonaPrestate })
-                )
+                gameArgs: bytes("")
             })
         );
     }
 
-    /// @notice Flag ON + input CANNON → deploys successfully with CANNON as respected type.
+    /// @notice Flag ON + input CANNON → deploys successfully with CANNON as the starting
+    ///         respected game type. CANNON itself is disabled during initial deployment
+    ///         (only PERMISSIONED_CANNON can be enabled); the game is enabled later via upgrade.
     function test_deploy_cannonRespectedGameType_succeeds() public {
         deployConfig.startingRespectedGameType = GameTypes.CANNON;
-        IOPContractsManagerV2.ChainContracts memory cts = runDeployV2(deployConfig);
+        // We expect PLDG-10 and CKDG-10 validator errors because CANNON and CANNON_KONA are
+        // disabled during initial deployment (no implementations registered).
+        IOPContractsManagerV2.ChainContracts memory cts =
+            runDeployV2(deployConfig, bytes(""), "PLDG-10,CKDG-10");
         assertEq(
             cts.anchorStateRegistry.respectedGameType().raw(),
             GameTypes.CANNON.raw(),
@@ -1259,10 +1262,14 @@ contract OPContractsManagerV2_FeatRespectedGameTypeCannonKona_Test is OPContract
         );
     }
 
-    /// @notice Flag ON + input PERMISSIONED_CANNON → deploys successfully with PERMISSIONED_CANNON.
+    /// @notice Flag ON + input PERMISSIONED_CANNON → deploys successfully with
+    ///         PERMISSIONED_CANNON as the starting respected game type.
     function test_deploy_permissionedCannonRespectedGameType_succeeds() public {
         deployConfig.startingRespectedGameType = GameTypes.PERMISSIONED_CANNON;
-        IOPContractsManagerV2.ChainContracts memory cts = runDeployV2(deployConfig);
+        // We expect PLDG-10 and CKDG-10 validator errors because CANNON and CANNON_KONA are
+        // disabled during initial deployment (no implementations registered).
+        IOPContractsManagerV2.ChainContracts memory cts =
+            runDeployV2(deployConfig, bytes(""), "PLDG-10,CKDG-10");
         assertEq(
             cts.anchorStateRegistry.respectedGameType().raw(),
             GameTypes.PERMISSIONED_CANNON.raw(),
