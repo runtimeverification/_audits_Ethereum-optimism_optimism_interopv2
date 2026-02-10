@@ -1253,8 +1253,7 @@ contract OPContractsManagerV2_FeatRespectedGameTypeCannonKona_Test is OPContract
         deployConfig.startingRespectedGameType = GameTypes.CANNON;
         // We expect PLDG-10 and CKDG-10 validator errors because CANNON and CANNON_KONA are
         // disabled during initial deployment (no implementations registered).
-        IOPContractsManagerV2.ChainContracts memory cts =
-            runDeployV2(deployConfig, bytes(""), "PLDG-10,CKDG-10");
+        IOPContractsManagerV2.ChainContracts memory cts = runDeployV2(deployConfig, bytes(""), "PLDG-10,CKDG-10");
         assertEq(
             cts.anchorStateRegistry.respectedGameType().raw(),
             GameTypes.CANNON.raw(),
@@ -1268,8 +1267,7 @@ contract OPContractsManagerV2_FeatRespectedGameTypeCannonKona_Test is OPContract
         deployConfig.startingRespectedGameType = GameTypes.PERMISSIONED_CANNON;
         // We expect PLDG-10 and CKDG-10 validator errors because CANNON and CANNON_KONA are
         // disabled during initial deployment (no implementations registered).
-        IOPContractsManagerV2.ChainContracts memory cts =
-            runDeployV2(deployConfig, bytes(""), "PLDG-10,CKDG-10");
+        IOPContractsManagerV2.ChainContracts memory cts = runDeployV2(deployConfig, bytes(""), "PLDG-10,CKDG-10");
         assertEq(
             cts.anchorStateRegistry.respectedGameType().raw(),
             GameTypes.PERMISSIONED_CANNON.raw(),
