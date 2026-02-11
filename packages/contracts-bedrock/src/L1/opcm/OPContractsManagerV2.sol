@@ -829,8 +829,9 @@ contract OPContractsManagerV2 is ISemver, OPContractsManagerUtilsCaller {
 
         // Infrastructure for switching the respected game type to CANNON_KONA.
         // TODO(#19116): After Kona audit, replace the check below with:
-        //   _cfg.startingRespectedGameType = GameTypes.CANNON_KONA;
+        //   if (_cfg.startingRespectedGameType == CANNON) set it to CANNON_KONA
         //   and validate that CANNON_KONA is enabled in disputeGameConfigs.
+        //   Leave PERMISSIONED_CANNON as-is.
         if (isDevFeatureEnabled(DevFeatures.RESPECTED_GAME_TYPE_CANNON_KONA)) {
             GameType gt = _cfg.startingRespectedGameType;
             if (gt.raw() != GameTypes.CANNON.raw() && gt.raw() != GameTypes.PERMISSIONED_CANNON.raw()) {

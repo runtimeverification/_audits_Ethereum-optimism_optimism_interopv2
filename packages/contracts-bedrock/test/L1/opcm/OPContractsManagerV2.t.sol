@@ -1176,8 +1176,9 @@ contract OPContractsManagerV2_DevFeatureBitmap_Test is OPContractsManagerV2_Test
 /// @title OPContractsManagerV2_FeatRespectedGameTypeCannonKona_Test
 /// @notice Tests the RESPECTED_GAME_TYPE_CANNON_KONA dev feature flag.
 // TODO(#19116): After Kona audit, update tests for CANNON_KONA as respected game type:
-// - test_deploy_cannonKonaRespectedGameType_succeeds (proves flag allows CANNON_KONA)
-// - test_deploy_invalidRespectedGameType_reverts (rejects CANNON/PERMISSIONED_CANNON)
+// - test_deploy_cannonRespectedGameType_succeeds (CANNON input → CANNON_KONA output)
+// - test_deploy_permissionedCannonRespectedGameType_succeeds (PERMISSIONED_CANNON stays unchanged)
+// - test_deploy_invalidRespectedGameType_reverts (rejects other game types)
 // - Add upgrade path test
 contract OPContractsManagerV2_FeatRespectedGameTypeCannonKona_Test is OPContractsManagerV2_Deploy_Test {
     /// @notice Sets up the test. Flag must be set BEFORE super.setUp() because devFeatureBitmap is
