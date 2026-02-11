@@ -52,6 +52,7 @@ pub struct NetworkActorBuilder<E: NetworkEngineClient> {
 /// // Construct the `NetworkActor` with the [`Network`].
 /// // let actor = NetworkActor::new(driver);
 /// ```
+#[derive(Debug)]
 pub struct NetworkActor<NetworkEngineClient_: NetworkEngineClient> {
     /// A channel to receive the unsafe block signer address.
     signer: mpsc::Receiver<Address>,
@@ -69,14 +70,6 @@ pub struct NetworkActor<NetworkEngineClient_: NetworkEngineClient> {
     unsafe_block_tx: mpsc::UnboundedSender<OpExecutionPayloadEnvelope>,
     /// Receiver for unsafe blocks received from gossip.
     unsafe_block_rx: mpsc::UnboundedReceiver<OpExecutionPayloadEnvelope>,
-}
-
-impl<NetworkEngineClient_: NetworkEngineClient> std::fmt::Debug
-    for NetworkActor<NetworkEngineClient_>
-{
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("NetworkActor").finish()
-    }
 }
 
 /// The inbound data for the network actor.

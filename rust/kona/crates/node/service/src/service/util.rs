@@ -5,7 +5,8 @@
 /// avoid having to specify a common error type between actors.
 ///
 /// Actors are passed in as `Option<actor>`. Each actor's [`step`](crate::NodeActor::step) method is
-/// called in a loop, with external cancellation via the provided [`CancellationToken`].
+/// called in a loop, with external cancellation via the provided
+/// [`CancellationToken`](tokio_util::sync::CancellationToken).
 ///
 /// This macro also handles OS shutdown signals (SIGTERM, SIGINT) and triggers graceful shutdown
 /// when received.

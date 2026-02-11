@@ -17,6 +17,7 @@ use std::{marker::PhantomData, time::Duration};
 use tokio::sync::mpsc;
 
 /// Builder for the [`RpcActor`]. Folds in what was previously `RpcContext`.
+#[derive(Debug)]
 pub struct RpcActorBuilder<
     EngineRpcClient_,
     RollupBoostAdminClient_,
@@ -46,28 +47,11 @@ pub struct RpcActorBuilder<
     pub l1_watcher_queries: mpsc::Sender<L1WatcherQueries>,
 }
 
-impl<EngineRpcClient_, RollupBoostAdminClient_, RollupBoostHealth_, SeqAdminClient_> std::fmt::Debug
-    for RpcActorBuilder<
-        EngineRpcClient_,
-        RollupBoostAdminClient_,
-        RollupBoostHealth_,
-        SeqAdminClient_,
-    >
-where
-    EngineRpcClient_: EngineRpcClient,
-    RollupBoostAdminClient_: RollupBoostAdminClient,
-    RollupBoostHealth_: RollupBoostHealthzApiServer,
-    SeqAdminClient_: SequencerAdminAPIClient,
-{
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("RpcActorBuilder").finish()
-    }
-}
-
 /// An actor that handles the RPC server for the rollup node.
 ///
 /// The generic parameters are consumed during [`init`](NodeActor::init) when the RPC modules are
 /// built. At runtime, the actor only holds the config, modules, and server handle.
+#[derive(Debug)]
 pub struct RpcActor<
     EngineRpcClient_: EngineRpcClient,
     RollupBoostAdminClient_: RollupBoostAdminClient,
@@ -91,19 +75,6 @@ pub struct RpcActor<
         RollupBoostHealth_,
         SeqAdminClient_,
     )>,
-}
-
-impl<
-    EngineRpcClient_: EngineRpcClient,
-    RollupBoostAdminClient_: RollupBoostAdminClient,
-    RollupBoostHealth_: RollupBoostHealthzApiServer,
-    SeqAdminClient_: SequencerAdminAPIClient,
-> std::fmt::Debug
-    for RpcActor<EngineRpcClient_, RollupBoostAdminClient_, RollupBoostHealth_, SeqAdminClient_>
-{
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("RpcActor").finish()
-    }
 }
 
 /// Launches the jsonrpsee [`Server`].

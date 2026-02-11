@@ -50,6 +50,7 @@ struct SealLastStartNextResult {
 }
 
 /// Builder for the [`SequencerActor`].
+#[derive(Debug)]
 pub struct SequencerActorBuilder<
     AttributesBuilder_,
     Conductor_,
@@ -79,32 +80,6 @@ pub struct SequencerActorBuilder<
     pub engine_client: SequencerEngineClient_,
     /// A client to asynchronously sign and gossip built payloads to the network actor.
     pub unsafe_payload_gossip_client: UnsafePayloadGossipClient_,
-}
-
-impl<
-    AttributesBuilder_,
-    Conductor_,
-    OriginSelector_,
-    SequencerEngineClient_,
-    UnsafePayloadGossipClient_,
-> std::fmt::Debug
-    for SequencerActorBuilder<
-        AttributesBuilder_,
-        Conductor_,
-        OriginSelector_,
-        SequencerEngineClient_,
-        UnsafePayloadGossipClient_,
-    >
-where
-    AttributesBuilder_: AttributesBuilder,
-    Conductor_: Conductor,
-    OriginSelector_: OriginSelector,
-    SequencerEngineClient_: SequencerEngineClient,
-    UnsafePayloadGossipClient_: UnsafePayloadGossipClient,
-{
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("SequencerActorBuilder").finish()
-    }
 }
 
 /// Inbound data for the [`SequencerActor`].
@@ -155,8 +130,6 @@ pub struct SequencerActor<
     pub(crate) next_payload_to_seal: Option<UnsealedPayloadHandle>,
     /// The duration of the last seal operation.
     pub(crate) last_seal_duration: Duration,
-    /// Whether the initial engine reset is needed.
-    pub(crate) needs_initial_reset: bool,
 }
 
 impl<
@@ -488,22 +461,17 @@ where
             build_ticker,
             next_payload_to_seal: None,
             last_seal_duration: Duration::from_secs(0),
-            needs_initial_reset: true,
         };
         actor.update_metrics();
+
+        // Reset the engine state prior to beginning block building.
+        actor.schedule_initial_reset().await?;
 
         let inbound = SequencerInboundData { admin_api_tx };
         Ok((inbound, actor))
     }
 
     async fn step(&mut self) -> Result<(), Self::Error> {
-        // On the first step, perform the initial engine reset.
-        if self.needs_initial_reset {
-            self.schedule_initial_reset().await?;
-            self.needs_initial_reset = false;
-            return Ok(());
-        }
-
         select! {
             // We are using a biased select here to ensure that the admin queries are given priority over the block building task.
             // This is important to limit the occurrence of race conditions where a stopped query is received when a sequencer is building a new block.

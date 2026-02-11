@@ -35,6 +35,5 @@ pub(crate) fn test_actor() -> SequencerActor<
         build_ticker,
         next_payload_to_seal: None,
         last_seal_duration: Duration::from_secs(0),
-        needs_initial_reset: false,
     }
 }
