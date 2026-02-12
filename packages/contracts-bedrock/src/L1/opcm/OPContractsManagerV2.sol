@@ -644,8 +644,9 @@ contract OPContractsManagerV2 is ISemver, OPContractsManagerUtilsCaller {
     }
 
     /// @notice Loads the respected game type and upgrades CANNON → CANNON_KONA when the
-    ///         UpgradeRespectedGameType instruction is present. Reverts if the instruction
-    ///         is present but the current game type is not CANNON.
+    ///         UpgradeRespectedGameType instruction is present. No-op if already CANNON_KONA.
+    ///         Reverts if the instruction is present but the current game type is neither
+    ///         CANNON nor CANNON_KONA.
     /// @param _anchorStateRegistry The AnchorStateRegistry contract.
     /// @param _instructions The extra upgrade instructions.
     /// @return The resolved game type.
@@ -666,8 +667,8 @@ contract OPContractsManagerV2 is ISemver, OPContractsManagerUtilsCaller {
             ),
             (GameType)
         );
-        // If UpgradeRespectedGameType instruction present: CANNON → CANNON_KONA.
-        // Reverts if the instruction is present but the game type is not CANNON.
+        // If UpgradeRespectedGameType instruction present: CANNON → CANNON_KONA (no-op if already CANNON_KONA).
+        // Reverts if the instruction is present but the game type is neither CANNON nor CANNON_KONA.
         bool upgradeRespectedGameType;
         for (uint256 i = 0; i < _instructions.length; i++) {
             if (_isMatchingInstruction(_instructions[i], Constants.UPGRADE_RESPECTED_GAME_TYPE_KEY, "CANNON_KONA")) {
@@ -676,7 +677,7 @@ contract OPContractsManagerV2 is ISemver, OPContractsManagerUtilsCaller {
             }
         }
         if (upgradeRespectedGameType) {
-            if (gt.raw() == GameTypes.CANNON.raw()) {
+            if (gt.raw() == GameTypes.CANNON.raw() || gt.raw() == GameTypes.CANNON_KONA.raw()) {
                 return GameTypes.CANNON_KONA;
             }
             revert OPContractsManagerV2_InvalidRespectedGameType();

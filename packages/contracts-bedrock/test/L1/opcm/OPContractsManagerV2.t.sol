@@ -792,6 +792,28 @@ contract OPContractsManagerV2_Upgrade_Test is OPContractsManagerV2_Upgrade_TestI
         );
     }
 
+    /// @notice Tests that the UpgradeRespectedGameType instruction is a no-op when already CANNON_KONA.
+    function test_upgrade_upgradeRespectedGameType_alreadyCannonKona_succeeds() public {
+        // Mock anchorStateRegistry to return CANNON_KONA as the respected game type.
+        vm.mockCall(
+            address(anchorStateRegistry),
+            abi.encodeCall(IAnchorStateRegistry.respectedGameType, ()),
+            abi.encode(GameTypes.CANNON_KONA)
+        );
+        v2UpgradeInput.extraInstructions.push(
+            IOPContractsManagerUtils.ExtraInstruction({
+                key: Constants.UPGRADE_RESPECTED_GAME_TYPE_KEY,
+                data: bytes("CANNON_KONA")
+            })
+        );
+        runCurrentUpgradeV2(chainPAO);
+        assertEq(
+            anchorStateRegistry.respectedGameType().raw(),
+            GameTypes.CANNON_KONA.raw(),
+            "respected game type should remain CANNON_KONA"
+        );
+    }
+
     /// @notice Tests that without the UpgradeRespectedGameType instruction, the game type stays unchanged.
     function test_upgrade_noInstruction_respectedGameTypeUnchanged_succeeds() public {
         GameType before = anchorStateRegistry.respectedGameType();
