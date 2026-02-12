@@ -33,5 +33,8 @@ ai-contracts-test:
 # Build Slack notification JSON from log.json results
 build-slack-notification:
     #!/usr/bin/env bash
-    SLACK_JSON=$(bash contracts-test-maintenance/components/slack-notifier/build_notification.sh contracts-test-maintenance/log.json)
+    SLACK_JSON=$(bash contracts-test-maintenance/components/slack-notifier/build_notification.sh contracts-test-maintenance/log.json || echo '{"text":"AI Contracts Test Maintenance System: notification build failed - check CI logs."}')
+    if [ -z "$SLACK_JSON" ] || [ "$SLACK_JSON" = "{}" ]; then
+        SLACK_JSON='{"text":"AI Contracts Test Maintenance System: no notification content available."}'
+    fi
     echo "export AI_PR_SLACK_TEMPLATE='${SLACK_JSON}'"

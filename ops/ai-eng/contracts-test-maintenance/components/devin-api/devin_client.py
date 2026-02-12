@@ -227,6 +227,13 @@ def monitor_session(session_id):
                     pr_data = api_response.get("pull_request") or {}
                     pr_url = pr_data.get("url")
 
+                    # #region agent log
+                    # Debug: log API response details when in blocked/finished state
+                    print(f"[DEBUG] status_enum={status_enum}, analysis_complete={analysis_complete}, changes_needed={changes_needed}, pr_url={pr_url}")
+                    print(f"[DEBUG] raw structured_output={json.dumps(api_response.get('structured_output'), default=str)}")
+                    print(f"[DEBUG] raw pull_request={json.dumps(api_response.get('pull_request'), default=str)}")
+                    # #endregion
+
                     # Case 1: Structured output indicates no changes needed
                     if analysis_complete and changes_needed is False:
                         reason = structured.get("reason", "Not provided")
@@ -257,6 +264,7 @@ def monitor_session(session_id):
                         elapsed = time.time() - blocked_start_time
                         if elapsed > blocked_timeout:
                             print(f"Timeout: Devin blocked for {int(elapsed)}s without outcome - check Devin web interface")
+                            write_log(session_id, "timeout", api_response)
                             sys.exit(1)
 
                         time.sleep(5)

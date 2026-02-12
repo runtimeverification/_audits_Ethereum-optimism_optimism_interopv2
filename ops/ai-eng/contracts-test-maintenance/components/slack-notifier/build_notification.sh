@@ -9,6 +9,12 @@ if [ -z "$LOG_FILE" ]; then
   exit 1
 fi
 
+if [ ! -f "$LOG_FILE" ]; then
+  echo "Warning: log file not found at $LOG_FILE" >&2
+  echo '{"text":"<!subteam^S07K486JEH4> AI Contracts Test Maintenance System run failed - no log.json produced. Check CI logs."}'
+  exit 0
+fi
+
 STATUS=$(jq -r '.status // empty' "$LOG_FILE")
 PR_URL=$(jq -r '.pull_request_url // empty' "$LOG_FILE")
 TEST_FILE=$(jq -r '.selected_files.test_path | split("/") | .[-1]' "$LOG_FILE")
@@ -26,6 +32,11 @@ elif [ -n "$PR_URL" ]; then
 elif [ "$STATUS" = "no_changes_needed" ]; then
   # Edge case: no changes and no PR (shouldn't happen with new workflow)
   MESSAGE=$'<!subteam^S07K486JEH4> AI Contracts Test Maintenance System analyzed '"${TEST_FILE}"$' - no changes needed (test coverage already comprehensive)'
+  SLACK_JSON=$(jq -n --arg msg "$MESSAGE" '{"text": $msg}')
+  echo "$SLACK_JSON"
+elif [ "$STATUS" = "timeout" ]; then
+  DEVIN_ID=$(jq -r '.devin_session_id // empty' "$LOG_FILE")
+  MESSAGE=$'<!subteam^S07K486JEH4> AI Contracts Test Maintenance System timed out waiting for Devin ('"${TEST_FILE}"$')\nDevin session: '"${DEVIN_ID}"$' - check Devin web interface for results'
   SLACK_JSON=$(jq -n --arg msg "$MESSAGE" '{"text": $msg}')
   echo "$SLACK_JSON"
 else
