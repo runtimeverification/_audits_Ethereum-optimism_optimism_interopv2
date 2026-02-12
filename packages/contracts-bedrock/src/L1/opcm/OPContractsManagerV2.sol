@@ -132,7 +132,7 @@ contract OPContractsManagerV2 is ISemver, OPContractsManagerUtilsCaller {
     /// @notice Thrown when an invalid upgrade sequence is provided.
     error OPContractsManagerV2_InvalidUpgradeSequence(string _lastVersion, string _thisVersion);
 
-    /// @notice Thrown when the respected game type is not an allowed type for the current feature flag state.
+    /// @notice Thrown when the respected game type is not an allowed type.
     error OPContractsManagerV2_InvalidRespectedGameType();
 
     /// @notice Address of the Standard Validator for this OPCM release.
@@ -643,9 +643,9 @@ contract OPContractsManagerV2 is ISemver, OPContractsManagerUtilsCaller {
         });
     }
 
-    /// @notice Loads the respected game type and optionally upgrades CANNON → CANNON_KONA
-    ///         when the UpgradeRespectedGameType instruction is present. PERMISSIONED_CANNON
-    ///         is left unchanged.
+    /// @notice Loads the respected game type and upgrades CANNON → CANNON_KONA when the
+    ///         UpgradeRespectedGameType instruction is present. Reverts if the instruction
+    ///         is present but the current game type is not CANNON.
     /// @param _anchorStateRegistry The AnchorStateRegistry contract.
     /// @param _instructions The extra upgrade instructions.
     /// @return The resolved game type.
@@ -667,11 +667,12 @@ contract OPContractsManagerV2 is ISemver, OPContractsManagerUtilsCaller {
             (GameType)
         );
         // If UpgradeRespectedGameType instruction present: CANNON → CANNON_KONA.
-        // PERMISSIONED_CANNON left unchanged.
+        // Reverts if the instruction is present but the game type is not CANNON.
         if (_hasInstruction(_instructions, Constants.UPGRADE_RESPECTED_GAME_TYPE_KEY, "CANNON_KONA")) {
             if (gt.raw() == GameTypes.CANNON.raw()) {
                 return GameTypes.CANNON_KONA;
             }
+            revert OPContractsManagerV2_InvalidRespectedGameType();
         }
         return gt;
     }
