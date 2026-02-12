@@ -668,7 +668,14 @@ contract OPContractsManagerV2 is ISemver, OPContractsManagerUtilsCaller {
         );
         // If UpgradeRespectedGameType instruction present: CANNON → CANNON_KONA.
         // Reverts if the instruction is present but the game type is not CANNON.
-        if (_hasInstruction(_instructions, Constants.UPGRADE_RESPECTED_GAME_TYPE_KEY, "CANNON_KONA")) {
+        bool upgradeRespectedGameType;
+        for (uint256 i = 0; i < _instructions.length; i++) {
+            if (_isMatchingInstruction(_instructions[i], Constants.UPGRADE_RESPECTED_GAME_TYPE_KEY, "CANNON_KONA")) {
+                upgradeRespectedGameType = true;
+                break;
+            }
+        }
+        if (upgradeRespectedGameType) {
             if (gt.raw() == GameTypes.CANNON.raw()) {
                 return GameTypes.CANNON_KONA;
             }

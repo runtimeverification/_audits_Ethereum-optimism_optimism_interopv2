@@ -99,26 +99,6 @@ abstract contract OPContractsManagerUtilsCaller {
         );
     }
 
-    /// @notice Helper function to check if a given instruction is present in a list of extra
-    ///         upgrade instructions.
-    /// @param _instructions The list of extra upgrade instructions.
-    /// @param _key The key of the instruction to check for.
-    /// @param _data The data of the instruction to check for.
-    /// @return True if the instruction is present, false otherwise.
-    function _hasInstruction(
-        IOPContractsManagerUtils.ExtraInstruction[] memory _instructions,
-        string memory _key,
-        bytes memory _data
-    )
-        internal
-        view
-        returns (bool)
-    {
-        return abi.decode(
-            _staticcall(abi.encodeCall(IOPContractsManagerUtils.hasInstruction, (_instructions, _key, _data))), (bool)
-        );
-    }
-
     /// @notice Helper function to load data from a source contract as bytes.
     /// @param _source The source contract to load the data from.
     /// @param _selector The selector of the function to call on the source contract.
