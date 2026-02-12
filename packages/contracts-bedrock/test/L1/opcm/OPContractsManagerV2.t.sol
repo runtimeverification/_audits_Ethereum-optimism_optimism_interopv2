@@ -756,7 +756,7 @@ contract OPContractsManagerV2_Upgrade_Test is OPContractsManagerV2_Upgrade_TestI
     }
 
     /// @notice Tests that the UpgradeRespectedGameType instruction upgrades CANNON → CANNON_KONA.
-    function test_upgrade_upgradeRespectedGameType_cannonToCannonKona_succeeds() public {
+    function test_upgrade_respectedGameTypeCannonToKona_succeeds() public {
         v2UpgradeInput.extraInstructions.push(
             IOPContractsManagerUtils.ExtraInstruction({
                 key: Constants.UPGRADE_RESPECTED_GAME_TYPE_KEY,
@@ -773,7 +773,7 @@ contract OPContractsManagerV2_Upgrade_Test is OPContractsManagerV2_Upgrade_TestI
 
     /// @notice Tests that the UpgradeRespectedGameType instruction reverts when the current game type
     ///         is not CANNON (e.g., PERMISSIONED_CANNON).
-    function test_upgrade_upgradeRespectedGameType_notCannon_reverts() public {
+    function test_upgrade_respectedGameTypeNotCannon_reverts() public {
         // Mock anchorStateRegistry to return PERMISSIONED_CANNON as the respected game type.
         vm.mockCall(
             address(anchorStateRegistry),
@@ -786,6 +786,7 @@ contract OPContractsManagerV2_Upgrade_Test is OPContractsManagerV2_Upgrade_TestI
                 data: bytes("CANNON_KONA")
             })
         );
+        // nosemgrep: sol-style-use-abi-encodecall
         runCurrentUpgradeV2(
             chainPAO,
             abi.encodeWithSelector(IOPContractsManagerV2.OPContractsManagerV2_InvalidRespectedGameType.selector)
@@ -793,7 +794,7 @@ contract OPContractsManagerV2_Upgrade_Test is OPContractsManagerV2_Upgrade_TestI
     }
 
     /// @notice Tests that the UpgradeRespectedGameType instruction is a no-op when already CANNON_KONA.
-    function test_upgrade_upgradeRespectedGameType_alreadyCannonKona_succeeds() public {
+    function test_upgrade_respectedGameTypeAlreadyKona_succeeds() public {
         // Mock anchorStateRegistry to return CANNON_KONA as the respected game type.
         vm.mockCall(
             address(anchorStateRegistry),
@@ -815,7 +816,7 @@ contract OPContractsManagerV2_Upgrade_Test is OPContractsManagerV2_Upgrade_TestI
     }
 
     /// @notice Tests that without the UpgradeRespectedGameType instruction, the game type stays unchanged.
-    function test_upgrade_noInstruction_respectedGameTypeUnchanged_succeeds() public {
+    function test_upgrade_respectedGameTypeUnchangedWithoutInstruction_succeeds() public {
         GameType before = anchorStateRegistry.respectedGameType();
         runCurrentUpgradeV2(chainPAO);
         assertEq(
