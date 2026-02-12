@@ -1206,30 +1206,6 @@ contract OPContractsManagerV2_Deploy_Test is OPContractsManagerV2_TestInit {
             deployConfig, abi.encodeWithSelector(IOPContractsManagerV2.OPContractsManagerV2_InvalidGameConfigs.selector)
         );
     }
-}
-
-/// @title OPContractsManagerV2_DevFeatureBitmap_Test
-/// @notice Tests OPContractsManagerV2.devFeatureBitmap
-contract OPContractsManagerV2_DevFeatureBitmap_Test is OPContractsManagerV2_TestInit {
-    /// @notice Tests that the devFeatureBitmap returned by opcmV2 matches the contractsContainer address's own.
-    function test_devFeatureBitmap_succeeds() public view {
-        assertEq(
-            opcmV2.devFeatureBitmap(),
-            opcmV2.contractsContainer().devFeatureBitmap(),
-            "devFeatureBitmap on opcmV2 does not match contractsContainer bitmap"
-        );
-    }
-}
-
-/// @title OPContractsManagerV2_RespectedGameType_Deploy_Test
-/// @notice Tests respected game type validation during deploy (no feature flag, no instructions).
-contract OPContractsManagerV2_RespectedGameType_Deploy_Test is OPContractsManagerV2_Deploy_Test {
-    /// @notice Sets up the test.
-    function setUp() public override {
-        super.setUp();
-        deployConfig.saltMixer = "test-salt-mixer-rgt";
-        deployConfig.l2ChainId = 999_999_998;
-    }
 
     /// @notice CANNON as respected game type succeeds during deploy.
     function test_deploy_cannonRespectedGameType_succeeds() public {
@@ -1275,6 +1251,19 @@ contract OPContractsManagerV2_RespectedGameType_Deploy_Test is OPContractsManage
         runDeployV2(
             deployConfig,
             abi.encodeWithSelector(IOPContractsManagerV2.OPContractsManagerV2_InvalidRespectedGameType.selector)
+        );
+    }
+}
+
+/// @title OPContractsManagerV2_DevFeatureBitmap_Test
+/// @notice Tests OPContractsManagerV2.devFeatureBitmap
+contract OPContractsManagerV2_DevFeatureBitmap_Test is OPContractsManagerV2_TestInit {
+    /// @notice Tests that the devFeatureBitmap returned by opcmV2 matches the contractsContainer address's own.
+    function test_devFeatureBitmap_succeeds() public view {
+        assertEq(
+            opcmV2.devFeatureBitmap(),
+            opcmV2.contractsContainer().devFeatureBitmap(),
+            "devFeatureBitmap on opcmV2 does not match contractsContainer bitmap"
         );
     }
 }
