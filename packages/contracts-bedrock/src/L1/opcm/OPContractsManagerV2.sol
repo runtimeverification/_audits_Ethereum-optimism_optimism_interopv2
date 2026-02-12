@@ -317,6 +317,11 @@ contract OPContractsManagerV2 is ISemver, OPContractsManagerUtilsCaller {
             if (_isMatchingInstruction(_instruction, Constants.PERMITTED_PROXY_DEPLOYMENT_KEY, "DelayedWETH")) {
                 return true;
             }
+
+            // TODO(#19116): Remove this allowance after CANNON_KONA is the default.
+            if (_isMatchingInstruction(_instruction, Constants.UPGRADE_RESPECTED_GAME_TYPE_KEY, "CANNON_KONA")) {
+                return true;
+            }
         }
 
         // Always return false by default.
@@ -623,14 +628,8 @@ contract OPContractsManagerV2 is ISemver, OPContractsManagerUtilsCaller {
                 ),
                 (Proposal)
             ),
-            startingRespectedGameType: abi.decode(
-                _loadBytes(
-                    address(_chainContracts.anchorStateRegistry),
-                    _chainContracts.anchorStateRegistry.respectedGameType.selector,
-                    "overrides.cfg.startingRespectedGameType",
-                    _upgradeInput.extraInstructions
-                ),
-                (GameType)
+            startingRespectedGameType: _loadAndResolveRespectedGameType(
+                _chainContracts.anchorStateRegistry, _upgradeInput.extraInstructions
             ),
             useCustomGasToken: abi.decode(
                 _loadBytes(
@@ -642,6 +641,39 @@ contract OPContractsManagerV2 is ISemver, OPContractsManagerUtilsCaller {
                 (bool)
             )
         });
+    }
+
+    /// @notice Loads the respected game type and optionally upgrades CANNON → CANNON_KONA
+    ///         when the UpgradeRespectedGameType instruction is present. PERMISSIONED_CANNON
+    ///         is left unchanged.
+    /// @param _anchorStateRegistry The AnchorStateRegistry contract.
+    /// @param _instructions The extra upgrade instructions.
+    /// @return The resolved game type.
+    function _loadAndResolveRespectedGameType(
+        IAnchorStateRegistry _anchorStateRegistry,
+        IOPContractsManagerUtils.ExtraInstruction[] memory _instructions
+    )
+        internal
+        view
+        returns (GameType)
+    {
+        GameType gt = abi.decode(
+            _loadBytes(
+                address(_anchorStateRegistry),
+                _anchorStateRegistry.respectedGameType.selector,
+                "overrides.cfg.startingRespectedGameType",
+                _instructions
+            ),
+            (GameType)
+        );
+        // If UpgradeRespectedGameType instruction present: CANNON → CANNON_KONA.
+        // PERMISSIONED_CANNON left unchanged.
+        if (_hasInstruction(_instructions, Constants.UPGRADE_RESPECTED_GAME_TYPE_KEY, "CANNON_KONA")) {
+            if (gt.raw() == GameTypes.CANNON.raw()) {
+                return GameTypes.CANNON_KONA;
+            }
+        }
+        return gt;
     }
 
     /// @notice Validates the deployment/upgrade config.
@@ -827,14 +859,17 @@ contract OPContractsManagerV2 is ISemver, OPContractsManagerUtilsCaller {
             abi.encodeCall(IDelayedWETH.initialize, (_cts.systemConfig))
         );
 
-        // Infrastructure for switching the respected game type to CANNON_KONA.
-        // TODO(#19116): After Kona audit, replace the check below with:
-        //   if (_cfg.startingRespectedGameType == CANNON) set it to CANNON_KONA
-        //   and validate that CANNON_KONA is enabled in disputeGameConfigs.
-        //   Leave PERMISSIONED_CANNON as-is.
-        if (isDevFeatureEnabled(DevFeatures.RESPECTED_GAME_TYPE_CANNON_KONA)) {
+        // Validate the respected game type is an allowed type.
+        {
             GameType gt = _cfg.startingRespectedGameType;
-            if (gt.raw() != GameTypes.CANNON.raw() && gt.raw() != GameTypes.PERMISSIONED_CANNON.raw()) {
+            if (
+                gt.raw() != GameTypes.CANNON.raw() && gt.raw() != GameTypes.PERMISSIONED_CANNON.raw()
+                    && gt.raw() != GameTypes.CANNON_KONA.raw()
+            ) {
+                revert OPContractsManagerV2_InvalidRespectedGameType();
+            }
+            // CANNON_KONA as respected game type requires its dispute game to be enabled.
+            if (gt.raw() == GameTypes.CANNON_KONA.raw() && !_cfg.disputeGameConfigs[2].enabled) {
                 revert OPContractsManagerV2_InvalidRespectedGameType();
             }
         }

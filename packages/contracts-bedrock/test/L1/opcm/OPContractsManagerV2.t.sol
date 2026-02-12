@@ -754,6 +754,33 @@ contract OPContractsManagerV2_Upgrade_Test is OPContractsManagerV2_Upgrade_TestI
         // Verify the system is still paused after the upgrade.
         assertTrue(superchainConfig.paused(address(0)), "System should still be paused after upgrade");
     }
+
+    /// @notice Tests that the UpgradeRespectedGameType instruction upgrades CANNON → CANNON_KONA.
+    function test_upgrade_upgradeRespectedGameType_cannonToCannonKona_succeeds() public {
+        v2UpgradeInput.extraInstructions.push(
+            IOPContractsManagerUtils.ExtraInstruction({
+                key: Constants.UPGRADE_RESPECTED_GAME_TYPE_KEY,
+                data: bytes("CANNON_KONA")
+            })
+        );
+        runCurrentUpgradeV2(chainPAO);
+        assertEq(
+            anchorStateRegistry.respectedGameType().raw(),
+            GameTypes.CANNON_KONA.raw(),
+            "respected game type should be CANNON_KONA after upgrade"
+        );
+    }
+
+    /// @notice Tests that without the UpgradeRespectedGameType instruction, the game type stays unchanged.
+    function test_upgrade_noInstruction_respectedGameTypeUnchanged_succeeds() public {
+        GameType before = anchorStateRegistry.respectedGameType();
+        runCurrentUpgradeV2(chainPAO);
+        assertEq(
+            anchorStateRegistry.respectedGameType().raw(),
+            before.raw(),
+            "respected game type should remain unchanged without instruction"
+        );
+    }
 }
 
 /// @title OPContractsManagerV2_IsPermittedUpgradeSequence_Test
@@ -1173,27 +1200,17 @@ contract OPContractsManagerV2_DevFeatureBitmap_Test is OPContractsManagerV2_Test
     }
 }
 
-/// @title OPContractsManagerV2_FeatRespectedGameTypeCannonKona_Test
-/// @notice Tests the RESPECTED_GAME_TYPE_CANNON_KONA dev feature flag.
-// TODO(#19116): After Kona audit, update tests for CANNON_KONA as respected game type:
-// - test_deploy_cannonRespectedGameType_succeeds (CANNON input → CANNON_KONA output)
-// - test_deploy_permissionedCannonRespectedGameType_succeeds (PERMISSIONED_CANNON stays unchanged)
-// - test_deploy_invalidRespectedGameType_reverts (rejects other game types)
-// - Add upgrade path test
-contract OPContractsManagerV2_FeatRespectedGameTypeCannonKona_Test is OPContractsManagerV2_Deploy_Test {
-    /// @notice Sets up the test. Flag must be set BEFORE super.setUp() because devFeatureBitmap is
-    ///         immutable in OPContractsManagerContainer.
+/// @title OPContractsManagerV2_RespectedGameType_Deploy_Test
+/// @notice Tests respected game type validation during deploy (no feature flag, no instructions).
+contract OPContractsManagerV2_RespectedGameType_Deploy_Test is OPContractsManagerV2_Deploy_Test {
+    /// @notice Sets up the test.
     function setUp() public override {
-        setDevFeatureEnabled(DevFeatures.RESPECTED_GAME_TYPE_CANNON_KONA);
         super.setUp();
-        deployConfig.saltMixer = "test-salt-mixer-cannon-kona";
-        deployConfig.startingRespectedGameType = GameTypes.CANNON;
+        deployConfig.saltMixer = "test-salt-mixer-rgt";
         deployConfig.l2ChainId = 999_999_998;
     }
 
-    /// @notice Flag ON + input CANNON → deploys successfully with CANNON as the starting
-    ///         respected game type. CANNON itself is disabled during initial deployment
-    ///         (only PERMISSIONED_CANNON can be enabled); the game is enabled later via upgrade.
+    /// @notice CANNON as respected game type succeeds during deploy.
     function test_deploy_cannonRespectedGameType_succeeds() public {
         deployConfig.startingRespectedGameType = GameTypes.CANNON;
         // We expect PLDG-10 and CKDG-10 validator errors because CANNON and CANNON_KONA are
@@ -1206,8 +1223,7 @@ contract OPContractsManagerV2_FeatRespectedGameTypeCannonKona_Test is OPContract
         );
     }
 
-    /// @notice Flag ON + input PERMISSIONED_CANNON → deploys successfully with
-    ///         PERMISSIONED_CANNON as the starting respected game type.
+    /// @notice PERMISSIONED_CANNON as respected game type succeeds during deploy.
     function test_deploy_permissionedCannonRespectedGameType_succeeds() public {
         deployConfig.startingRespectedGameType = GameTypes.PERMISSIONED_CANNON;
         // We expect PLDG-10 and CKDG-10 validator errors because CANNON and CANNON_KONA are
@@ -1220,9 +1236,20 @@ contract OPContractsManagerV2_FeatRespectedGameTypeCannonKona_Test is OPContract
         );
     }
 
-    /// @notice Flag ON + input CANNON_KONA → reverts. Not yet allowed until Kona audit completes.
-    function test_deploy_invalidRespectedGameType_reverts() public {
+    /// @notice CANNON_KONA as respected game type reverts because its dispute game is not enabled
+    ///         during initial deployment.
+    function test_deploy_cannonKonaRespectedGameType_reverts() public {
         deployConfig.startingRespectedGameType = GameTypes.CANNON_KONA;
+        // nosemgrep: sol-style-use-abi-encodecall
+        runDeployV2(
+            deployConfig,
+            abi.encodeWithSelector(IOPContractsManagerV2.OPContractsManagerV2_InvalidRespectedGameType.selector)
+        );
+    }
+
+    /// @notice An invalid game type reverts.
+    function test_deploy_invalidRespectedGameType_reverts() public {
+        deployConfig.startingRespectedGameType = GameType.wrap(255);
         // nosemgrep: sol-style-use-abi-encodecall
         runDeployV2(
             deployConfig,
