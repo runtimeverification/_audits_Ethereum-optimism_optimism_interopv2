@@ -30,6 +30,11 @@ func (c *simpleChainContainer) FullyVerifiedL2Head() eth.BlockID {
 	return oldestVerifiedBlock
 }
 
+func (c *simpleChainContainer) FinalizedL2Head() eth.BlockID {
+	// TODO
+	return eth.BlockID{}
+}
+
 // IsDenied checks if a block hash is on the deny list at the given height.
 func (c *simpleChainContainer) IsDenied(height uint64, payloadHash common.Hash) (bool, error) {
 	if c.denyList == nil {
