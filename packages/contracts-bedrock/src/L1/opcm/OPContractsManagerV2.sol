@@ -878,8 +878,17 @@ contract OPContractsManagerV2 is ISemver, OPContractsManagerUtilsCaller {
                 revert OPContractsManagerV2_InvalidRespectedGameType();
             }
             // CANNON_KONA as respected game type requires its dispute game to be enabled.
-            if (gt.raw() == GameTypes.CANNON_KONA.raw() && !_cfg.disputeGameConfigs[2].enabled) {
-                revert OPContractsManagerV2_InvalidRespectedGameType();
+            if (gt.raw() == GameTypes.CANNON_KONA.raw()) {
+                bool enabled;
+                for (uint256 i = 0; i < _cfg.disputeGameConfigs.length; i++) {
+                    if (_cfg.disputeGameConfigs[i].gameType.raw() == GameTypes.CANNON_KONA.raw()) {
+                        enabled = _cfg.disputeGameConfigs[i].enabled;
+                        break;
+                    }
+                }
+                if (!enabled) {
+                    revert OPContractsManagerV2_InvalidRespectedGameType();
+                }
             }
         }
 
