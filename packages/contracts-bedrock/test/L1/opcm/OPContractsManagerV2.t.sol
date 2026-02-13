@@ -759,20 +759,20 @@ contract OPContractsManagerV2_Upgrade_Test is OPContractsManagerV2_Upgrade_TestI
     function test_upgrade_respectedGameTypeCannonToKona_succeeds() public {
         v2UpgradeInput.extraInstructions.push(
             IOPContractsManagerUtils.ExtraInstruction({
-                key: Constants.UPGRADE_RESPECTED_GAME_TYPE_KEY,
-                data: bytes("CANNON_KONA")
+                key: "overrides.cfg.startingRespectedGameType",
+                data: abi.encode(GameTypes.CANNON_KONA)
             })
         );
         runCurrentUpgradeV2(chainPAO);
     }
 
-    /// @notice Tests that using the built-in override key for startingRespectedGameType
-    ///         reverts because it is not in the permitted instructions list.
-    function test_upgrade_respectedGameTypeViaOverrideKey_reverts() public {
+    /// @notice Overriding respected game type to non-CANNON_KONA value is rejected by
+    ///         the permitted instructions check.
+    function test_upgrade_respectedGameTypeNotCannonKona_reverts() public {
         v2UpgradeInput.extraInstructions.push(
             IOPContractsManagerUtils.ExtraInstruction({
                 key: "overrides.cfg.startingRespectedGameType",
-                data: abi.encode(GameTypes.CANNON_KONA)
+                data: abi.encode(GameTypes.CANNON)
             })
         );
         // nosemgrep: sol-style-use-abi-encodecall
@@ -785,30 +785,7 @@ contract OPContractsManagerV2_Upgrade_Test is OPContractsManagerV2_Upgrade_TestI
         );
     }
 
-    /// @notice Tests that the UpgradeRespectedGameType instruction reverts when the current game type
-    ///         is not CANNON (e.g., PERMISSIONED_CANNON).
-    function test_upgrade_respectedGameTypeNotCannon_reverts() public {
-        // Mock anchorStateRegistry to return PERMISSIONED_CANNON as the respected game type.
-        vm.mockCall(
-            address(anchorStateRegistry),
-            abi.encodeCall(IAnchorStateRegistry.respectedGameType, ()),
-            abi.encode(GameTypes.PERMISSIONED_CANNON)
-        );
-        v2UpgradeInput.extraInstructions.push(
-            IOPContractsManagerUtils.ExtraInstruction({
-                key: Constants.UPGRADE_RESPECTED_GAME_TYPE_KEY,
-                data: bytes("CANNON_KONA")
-            })
-        );
-        vm.expectRevert("upgrade failed");
-        // nosemgrep: sol-style-use-abi-encodecall
-        runCurrentUpgradeV2(
-            chainPAO,
-            abi.encodeWithSelector(IOPContractsManagerV2.OPContractsManagerV2_InvalidRespectedGameType.selector)
-        );
-    }
-
-    /// @notice Tests that the UpgradeRespectedGameType instruction is a no-op when already CANNON_KONA.
+    /// @notice Tests that using the override key to set CANNON_KONA succeeds when already CANNON_KONA.
     function test_upgrade_respectedGameTypeAlreadyKona_succeeds() public {
         // Mock anchorStateRegistry to return CANNON_KONA as the respected game type.
         vm.mockCall(
@@ -818,8 +795,8 @@ contract OPContractsManagerV2_Upgrade_Test is OPContractsManagerV2_Upgrade_TestI
         );
         v2UpgradeInput.extraInstructions.push(
             IOPContractsManagerUtils.ExtraInstruction({
-                key: Constants.UPGRADE_RESPECTED_GAME_TYPE_KEY,
-                data: bytes("CANNON_KONA")
+                key: "overrides.cfg.startingRespectedGameType",
+                data: abi.encode(GameTypes.CANNON_KONA)
             })
         );
         runCurrentUpgradeV2(chainPAO);
@@ -830,7 +807,7 @@ contract OPContractsManagerV2_Upgrade_Test is OPContractsManagerV2_Upgrade_TestI
         );
     }
 
-    /// @notice Tests that without the UpgradeRespectedGameType instruction
+    /// @notice Tests that without the override instruction, the game type stays unchanged.
     function test_upgrade_respectedGameTypeUnchangedWithoutInstruction_succeeds() public {
         runCurrentUpgradeV2(chainPAO);
     }
@@ -1239,16 +1216,13 @@ contract OPContractsManagerV2_Deploy_Test is OPContractsManagerV2_TestInit {
         );
     }
 
-    /// @notice CANNON as respected game type succeeds during deploy.
-    function test_deploy_cannonRespectedGameType_succeeds() public {
+    /// @notice CANNON as respected game type reverts because it is not enabled during initial deployment.
+    function test_deploy_cannonRespectedGameType_reverts() public {
         deployConfig.startingRespectedGameType = GameTypes.CANNON;
-        // We expect PLDG-10 and CKDG-10 validator errors because CANNON and CANNON_KONA are
-        // disabled during initial deployment (no implementations registered).
-        IOPContractsManagerV2.ChainContracts memory cts = runDeployV2(deployConfig, bytes(""), "PLDG-10,CKDG-10");
-        assertEq(
-            cts.anchorStateRegistry.respectedGameType().raw(),
-            GameTypes.CANNON.raw(),
-            "respected game type should be CANNON"
+        // nosemgrep: sol-style-use-abi-encodecall
+        runDeployV2(
+            deployConfig,
+            abi.encodeWithSelector(IOPContractsManagerV2.OPContractsManagerV2_InvalidRespectedGameType.selector)
         );
     }
 

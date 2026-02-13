@@ -50,9 +50,6 @@ library Constants {
     /// @notice Special constant key for the PermittedProxyDeployment instruction.
     string internal constant PERMITTED_PROXY_DEPLOYMENT_KEY = "PermittedProxyDeployment";
 
-    /// @notice Special constant key for the UpgradeRespectedGameType instruction.
-    string internal constant UPGRADE_RESPECTED_GAME_TYPE_KEY = "UpgradeRespectedGameType";
-
     /// @notice Special constant value for the PermittedProxyDeployment instruction to permit all
     ///         contracts to be deployed. Only to be used for deployments.
     bytes internal constant PERMIT_ALL_CONTRACTS_INSTRUCTION = bytes("ALL");

@@ -319,7 +319,11 @@ contract OPContractsManagerV2 is ISemver, OPContractsManagerUtilsCaller {
             }
 
             // TODO(#19116): Remove this allowance after CANNON_KONA is the default.
-            if (_isMatchingInstruction(_instruction, Constants.UPGRADE_RESPECTED_GAME_TYPE_KEY, "CANNON_KONA")) {
+            if (
+                _isMatchingInstruction(
+                    _instruction, "overrides.cfg.startingRespectedGameType", abi.encode(GameTypes.CANNON_KONA)
+                )
+            ) {
                 return true;
             }
         }
@@ -628,8 +632,14 @@ contract OPContractsManagerV2 is ISemver, OPContractsManagerUtilsCaller {
                 ),
                 (Proposal)
             ),
-            startingRespectedGameType: _loadAndResolveRespectedGameType(
-                _chainContracts.anchorStateRegistry, _upgradeInput.extraInstructions
+            startingRespectedGameType: abi.decode(
+                _loadBytes(
+                    address(_chainContracts.anchorStateRegistry),
+                    _chainContracts.anchorStateRegistry.respectedGameType.selector,
+                    "overrides.cfg.startingRespectedGameType",
+                    _upgradeInput.extraInstructions
+                ),
+                (GameType)
             ),
             useCustomGasToken: abi.decode(
                 _loadBytes(
@@ -641,48 +651,6 @@ contract OPContractsManagerV2 is ISemver, OPContractsManagerUtilsCaller {
                 (bool)
             )
         });
-    }
-
-    /// @notice Loads the respected game type and upgrades CANNON → CANNON_KONA when the
-    ///         UpgradeRespectedGameType instruction is present. No-op if already CANNON_KONA.
-    ///         Reverts if the instruction is present but the current game type is neither
-    ///         CANNON nor CANNON_KONA.
-    /// @param _anchorStateRegistry The AnchorStateRegistry contract.
-    /// @param _instructions The extra upgrade instructions.
-    /// @return The resolved game type.
-    function _loadAndResolveRespectedGameType(
-        IAnchorStateRegistry _anchorStateRegistry,
-        IOPContractsManagerUtils.ExtraInstruction[] memory _instructions
-    )
-        internal
-        view
-        returns (GameType)
-    {
-        GameType gt = abi.decode(
-            _loadBytes(
-                address(_anchorStateRegistry),
-                _anchorStateRegistry.respectedGameType.selector,
-                "overrides.cfg.startingRespectedGameType",
-                _instructions
-            ),
-            (GameType)
-        );
-        // If UpgradeRespectedGameType instruction present: CANNON → CANNON_KONA (no-op if already CANNON_KONA).
-        // Reverts if the instruction is present but the game type is neither CANNON nor CANNON_KONA.
-        bool upgradeRespectedGameType;
-        for (uint256 i = 0; i < _instructions.length; i++) {
-            if (_isMatchingInstruction(_instructions[i], Constants.UPGRADE_RESPECTED_GAME_TYPE_KEY, "CANNON_KONA")) {
-                upgradeRespectedGameType = true;
-                break;
-            }
-        }
-        if (upgradeRespectedGameType) {
-            if (gt.raw() == GameTypes.CANNON.raw() || gt.raw() == GameTypes.CANNON_KONA.raw()) {
-                return GameTypes.CANNON_KONA;
-            }
-            revert OPContractsManagerV2_InvalidRespectedGameType();
-        }
-        return gt;
     }
 
     /// @notice Validates the deployment/upgrade config.
@@ -727,6 +695,20 @@ contract OPContractsManagerV2 is ISemver, OPContractsManagerUtilsCaller {
         // now we explicitly assert that it is enabled.
         if (!_cfg.disputeGameConfigs[1].enabled) {
             revert OPContractsManagerV2_InvalidGameConfigs();
+        }
+
+        // Validate that the starting respected game type is enabled.
+        {
+            bool respectedGameTypeEnabled;
+            for (uint256 i = 0; i < _cfg.disputeGameConfigs.length; i++) {
+                if (_cfg.disputeGameConfigs[i].gameType.raw() == _cfg.startingRespectedGameType.raw()) {
+                    respectedGameTypeEnabled = _cfg.disputeGameConfigs[i].enabled;
+                    break;
+                }
+            }
+            if (!respectedGameTypeEnabled) {
+                revert OPContractsManagerV2_InvalidRespectedGameType();
+            }
         }
     }
 
@@ -867,30 +849,6 @@ contract OPContractsManagerV2 is ISemver, OPContractsManagerUtilsCaller {
             impls.delayedWETHImpl,
             abi.encodeCall(IDelayedWETH.initialize, (_cts.systemConfig))
         );
-
-        // Validate the respected game type is an allowed type.
-        {
-            GameType gt = _cfg.startingRespectedGameType;
-            if (
-                gt.raw() != GameTypes.CANNON.raw() && gt.raw() != GameTypes.PERMISSIONED_CANNON.raw()
-                    && gt.raw() != GameTypes.CANNON_KONA.raw()
-            ) {
-                revert OPContractsManagerV2_InvalidRespectedGameType();
-            }
-            // CANNON_KONA as respected game type requires its dispute game to be enabled.
-            if (gt.raw() == GameTypes.CANNON_KONA.raw()) {
-                bool enabled;
-                for (uint256 i = 0; i < _cfg.disputeGameConfigs.length; i++) {
-                    if (_cfg.disputeGameConfigs[i].gameType.raw() == GameTypes.CANNON_KONA.raw()) {
-                        enabled = _cfg.disputeGameConfigs[i].enabled;
-                        break;
-                    }
-                }
-                if (!enabled) {
-                    revert OPContractsManagerV2_InvalidRespectedGameType();
-                }
-            }
-        }
 
         // Update the AnchorStateRegistry.
         _upgrade(
