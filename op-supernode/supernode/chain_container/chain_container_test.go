@@ -175,6 +175,9 @@ func (m *mockVerificationActivity) VerifiedAtTimestamp(ts uint64) (bool, error) 
 func (m *mockVerificationActivity) LatestVerifiedL2Block(chainID eth.ChainID) (eth.BlockID, uint64) {
 	return eth.BlockID{}, 0
 }
+func (m *mockVerificationActivity) LatestFinalizedL2Block(chainID eth.ChainID) (eth.BlockID, uint64) {
+	return eth.BlockID{}, 0
+}
 func (m *mockVerificationActivity) Reset(chainID eth.ChainID, timestamp uint64) {}
 
 // Test helpers

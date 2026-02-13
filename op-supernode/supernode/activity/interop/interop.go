@@ -415,6 +415,11 @@ func (i *Interop) LatestVerifiedL2Block(chainID eth.ChainID) (eth.BlockID, uint6
 	return head, ts
 }
 
+func (i *Interop) LatestFinalizedL2Block(chainID eth.ChainID) (eth.BlockID, uint64) {
+	// TODO: implement finalized block tracking
+	return eth.BlockID{}, 0
+}
+
 // Reset is called when a chain container resets to a given timestamp.
 // It prunes the logsDB and verifiedDB for that chain at and after the timestamp.
 func (i *Interop) Reset(chainID eth.ChainID, timestamp uint64) {

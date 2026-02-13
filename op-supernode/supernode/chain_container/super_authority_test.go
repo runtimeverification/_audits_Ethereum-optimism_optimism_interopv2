@@ -27,6 +27,9 @@ func (m *mockVerificationActivityForSuperAuthority) VerifiedAtTimestamp(ts uint6
 func (m *mockVerificationActivityForSuperAuthority) LatestVerifiedL2Block(chainID eth.ChainID) (eth.BlockID, uint64) {
 	return m.latestVerifiedBlock, m.latestVerifiedTS
 }
+func (m *mockVerificationActivityForSuperAuthority) LatestFinalizedL2Block(chainID eth.ChainID) (eth.BlockID, uint64) {
+	return eth.BlockID{}, 0
+}
 func (m *mockVerificationActivityForSuperAuthority) Reset(eth.ChainID, uint64) {}
 
 var _ activity.VerificationActivity = (*mockVerificationActivityForSuperAuthority)(nil)
