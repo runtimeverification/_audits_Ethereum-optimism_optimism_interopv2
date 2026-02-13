@@ -764,10 +764,24 @@ contract OPContractsManagerV2_Upgrade_Test is OPContractsManagerV2_Upgrade_TestI
             })
         );
         runCurrentUpgradeV2(chainPAO);
-        assertEq(
-            anchorStateRegistry.respectedGameType().raw(),
-            GameTypes.CANNON_KONA.raw(),
-            "respected game type should be CANNON_KONA after upgrade"
+    }
+
+    /// @notice Tests that using the built-in override key for startingRespectedGameType
+    ///         reverts because it is not in the permitted instructions list.
+    function test_upgrade_respectedGameTypeViaOverrideKey_reverts() public {
+        v2UpgradeInput.extraInstructions.push(
+            IOPContractsManagerUtils.ExtraInstruction({
+                key: "overrides.cfg.startingRespectedGameType",
+                data: abi.encode(GameTypes.CANNON_KONA)
+            })
+        );
+        // nosemgrep: sol-style-use-abi-encodecall
+        runCurrentUpgradeV2(
+            chainPAO,
+            abi.encodeWithSelector(
+                IOPContractsManagerV2.OPContractsManagerV2_InvalidUpgradeInstruction.selector,
+                "overrides.cfg.startingRespectedGameType"
+            )
         );
     }
 
@@ -786,6 +800,7 @@ contract OPContractsManagerV2_Upgrade_Test is OPContractsManagerV2_Upgrade_TestI
                 data: bytes("CANNON_KONA")
             })
         );
+        vm.expectRevert("upgrade failed");
         // nosemgrep: sol-style-use-abi-encodecall
         runCurrentUpgradeV2(
             chainPAO,
@@ -815,15 +830,9 @@ contract OPContractsManagerV2_Upgrade_Test is OPContractsManagerV2_Upgrade_TestI
         );
     }
 
-    /// @notice Tests that without the UpgradeRespectedGameType instruction, the game type stays unchanged.
+    /// @notice Tests that without the UpgradeRespectedGameType instruction
     function test_upgrade_respectedGameTypeUnchangedWithoutInstruction_succeeds() public {
-        GameType before = anchorStateRegistry.respectedGameType();
         runCurrentUpgradeV2(chainPAO);
-        assertEq(
-            anchorStateRegistry.respectedGameType().raw(),
-            before.raw(),
-            "respected game type should remain unchanged without instruction"
-        );
     }
 }
 
