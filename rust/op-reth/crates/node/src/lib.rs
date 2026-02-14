@@ -11,8 +11,7 @@
 #![cfg_attr(docsrs, feature(doc_cfg))]
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
 
-// Used for feature activation only.
-#[cfg(feature = "test-utils")]
+#[cfg(feature = "reth-db-api")]
 use reth_db_api as _;
 
 /// CLI argument parsing for the optimism node.
@@ -49,3 +48,6 @@ pub use reth_optimism_storage::OpStorage;
 
 use op_revm as _;
 use revm as _;
+
+#[cfg(feature = "test-utils")]
+use reth_tasks as _;
