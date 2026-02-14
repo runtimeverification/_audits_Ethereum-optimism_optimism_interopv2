@@ -907,23 +907,23 @@ jobs:
             just build-<<parameters.target>>
 
   # Kona Build Benchmarks
-  kona-cargo-build-benches:
+  rust-build-benches:
     docker:
       - image: <<pipeline.parameters.c-default_docker_image>>
     resource_class: 2xlarge
     steps:
       - utils/checkout-with-mise:
           checkout-method: blobless
-      - rust-prepare-and-restore-cache: &kona-benches-cache
+      - rust-prepare-and-restore-cache: &rust-benches-cache
           directory: rust
-          prefix: kona-benches
+          prefix: rust-benches
       - run:
           name: Build benchmarks
-          working_directory: rust/kona
+          working_directory: rust
           no_output_timeout: 40m
           command: |
-            just benches
-      - rust-save-build-cache: *kona-benches-cache
+            just bench
+      - rust-save-build-cache: *rust-benches-cache
 
   # Kona Coverage
   kona-coverage:
@@ -1260,7 +1260,7 @@ workflows:
               target: ["cannon-client", "asterisc-client"]
           context: *rust-ci-context
 
-      - kona-cargo-build-benches:
+      - rust-build-benches:
           context: *rust-ci-context
 
       - kona-coverage:

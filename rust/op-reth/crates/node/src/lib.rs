@@ -11,9 +11,6 @@
 #![cfg_attr(docsrs, feature(doc_cfg))]
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
 
-#[cfg(feature = "reth-db-api")]
-use reth_db_api as _;
-
 /// CLI argument parsing for the optimism node.
 pub mod args;
 
