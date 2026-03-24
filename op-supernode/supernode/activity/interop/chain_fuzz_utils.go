@@ -45,14 +45,6 @@ type ChainBlock struct {
 	block *eth.L2BlockRef
 }
 
-type ChainHeads struct {
-	// These are block numbers on the chain
-	localSafe   uint64
-	localUnsafe uint64
-	crossSafe   uint64
-	crossUnsafe uint64
-}
-
 type RandomChainParams struct {
 	chainCount int
 
@@ -72,19 +64,12 @@ type L1Assignments struct {
 
 type RandomChain struct {
 	randomGenerator *rand.Rand
-	cutoffs         struct {
-		crossUnsafe int
-		crossSafe   int
-		localUnsafe int
-		localSafe   int
-	}
 	chainIDs      []eth.ChainID
 	allBlocks     []*ChainBlock
 	cbIndices     map[ChainBlock]int // Lookup for a ChainBlock's index in allBlocks
 	generatedLogs map[ChainBlock][]*types2.Log
 	dependencies  map[ChainBlock][]*ChainBlock
 	chainBlocks   map[eth.ChainID][]*eth.L2BlockRef
-	chainHeads    map[eth.ChainID]*ChainHeads
 	l1SourceMap   map[ChainBlock]eth.BlockRef
 	l1Source      map[uint64]eth.BlockRef
 	receipts      map[eth.ChainID]map[eth.BlockID]types2.Receipts
@@ -114,17 +99,16 @@ func (c RandomChainContainer) LocalSafeBlockAtTimestamp(ctx context.Context, ts 
 			break
 		}
 	}
-	if theblock == nil || theblock.Number > c.randomChain.chainHeads[c.chainID].localSafe {
+	if theblock == nil {
 		return eth.L2BlockRef{}, ethereum.NotFound;
 	}
 	return *theblock, nil
 }
 
 func (c RandomChainContainer) SyncStatus(ctx context.Context) (*eth.SyncStatus, error) {
-	heads := c.randomChain.chainHeads[c.chainID]
 	blocks := c.randomChain.chainBlocks[c.chainID]
-	unsafeBlock := blocks[heads.localUnsafe]
-	cb := ChainBlock{chain: c.chainID, block: unsafeBlock}
+	block := blocks[len(blocks)-1]
+	cb := ChainBlock{chain: c.chainID, block: block}
 	l1Origin := c.randomChain.l1SourceMap[cb]
 	return &eth.SyncStatus{CurrentL1: l1Origin}, nil
 }
@@ -201,47 +185,19 @@ func (rc *RandomChain) GetContainers() (map[eth.ChainID]cc.ChainContainer) {
 	return chains
 }
 
-func (rc *RandomChain) ChainInfo(chainid eth.ChainID) (blocks []*eth.L2BlockRef, heads ChainHeads) {
-	blocks = rc.chainBlocks[chainid]
-	heads = *rc.chainHeads[chainid]
-	return blocks, heads
-}
-
 func (p *RandomChainParams) MakeRandomChain(seed int64) (res RandomChain) {
 	r := rand.New(rand.NewSource(seed))
 
-	// Add two special blocks to be used when creating invalid dependencies
 	totalLength := randomInRange(r, p.minLength, p.maxLength) + 2
-	// First block has a timestamp far in the past, already expired (used in InsertDependencyToExpiredMessage)
-	expiredBlockIndex := 0
-	// Last block has a timestamp in the future (used in InsertFutureDependency)
-	futureBlockIndex := totalLength - 1
 
-	// Heads (and candidates) must be between the two special blocks
-	localUnsafe := futureBlockIndex - 1
-	localSafe := randomInRange(r, expiredBlockIndex+2, futureBlockIndex)
-	crossSafe := randomInRange(r, expiredBlockIndex+1, localSafe)
-	crossUnsafe := randomInRange(r, crossSafe, localUnsafe)
 	res = RandomChain{
 		randomGenerator: r,
-		cutoffs: struct {
-			crossUnsafe int
-			crossSafe   int
-			localUnsafe int
-			localSafe   int
-		}{
-			crossUnsafe: crossUnsafe,
-			crossSafe:   crossSafe,
-			localUnsafe: localUnsafe,
-			localSafe:   localSafe,
-		},
 		chainIDs:      make([]eth.ChainID, 0, p.chainCount),
 		allBlocks:     make([]*ChainBlock, 0, totalLength),
 		cbIndices:     make(map[ChainBlock]int),
 		generatedLogs: make(map[ChainBlock][]*types2.Log),
 		dependencies:  make(map[ChainBlock][]*ChainBlock),
 		chainBlocks:   make(map[eth.ChainID][]*eth.L2BlockRef),
-		chainHeads:    make(map[eth.ChainID]*ChainHeads),
 		l1SourceMap:   make(map[ChainBlock]eth.BlockRef),
 		l1Source:      make(map[uint64]eth.BlockRef),
 		receipts:      make(map[eth.ChainID]map[eth.BlockID]types2.Receipts),
@@ -251,7 +207,6 @@ func (p *RandomChainParams) MakeRandomChain(seed int64) (res RandomChain) {
 	for i := range p.chainCount {
 		chain := eth.ChainIDFromUInt64(uint64(i))
 		res.chainBlocks[chain] = make([]*eth.L2BlockRef, 0)
-		res.chainHeads[chain] = &ChainHeads{}
 		res.blockTimes[chain] = randomInRange(r, 1, p.maxBlockTimeExclusive)
 		res.chainIDs = append(res.chainIDs, chain)
 	}
@@ -259,22 +214,32 @@ func (p *RandomChainParams) MakeRandomChain(seed int64) (res RandomChain) {
 	//
 	// Create array of all blocks
 	//
-	for range totalLength {
-		chain := res.chainIDs[r.Intn(p.chainCount)]
-		var block eth.L2BlockRef
+	var block eth.L2BlockRef
 
-		if len(res.chainBlocks[chain]) == 0 {
-			block = testutils.RandomL2BlockRef(r)
-			block.Number = 0
-			block.Time = 0
-		} else {
-			lastBlock := res.chainBlocks[chain][len(res.chainBlocks[chain])-1]
-			block = testutils.NextRandomL2Ref(r, uint64(res.blockTimes[chain]), *lastBlock, eth.BlockID{})
-		}
-
+	// First, guarantee that each chain contains at least one block
+	for _, chain := range res.chainIDs {
+		block = testutils.RandomL2BlockRef(r)
+		block.Number = 0
+		block.Time = 0
 		res.chainBlocks[chain] = append(res.chainBlocks[chain], &block)
 	}
 
+	// Then, generate the rest of the blocks.
+	for range totalLength - p.chainCount {
+		// Select a random chain
+		chain := res.chainIDs[r.Intn(p.chainCount)]
+		lastBlock := res.chainBlocks[chain][len(res.chainBlocks[chain])-1]
+		block = testutils.NextRandomL2Ref(r, uint64(res.blockTimes[chain]), *lastBlock, eth.BlockID{})
+
+		// Add a random block to it
+		res.chainBlocks[chain] = append(res.chainBlocks[chain], &block)
+	}
+
+	// Populate res.allBlocks
+	//
+	// The blocks need to be added in order by timestamp,
+	// so all of the iterating logic through the chains here
+	// finds the next block with the lowest timestamp.
 	chainIndices := make(map[eth.ChainID]int)
 	for _, chain := range res.chainIDs {
 		chainIndices[chain] = 0;
@@ -295,19 +260,6 @@ func (p *RandomChainParams) MakeRandomChain(seed int64) (res RandomChain) {
 		}
 
 		chainIndices[finalChain]++
-
-		if i <= res.cutoffs.localSafe {
-			res.chainHeads[finalChain].localSafe = finalBlock.Number
-		}
-		if i <= res.cutoffs.localUnsafe {
-			res.chainHeads[finalChain].localUnsafe = finalBlock.Number
-		}
-		if i <= res.cutoffs.crossSafe {
-			res.chainHeads[finalChain].crossSafe = finalBlock.Number
-		}
-		if i <= res.cutoffs.crossUnsafe {
-			res.chainHeads[finalChain].crossUnsafe = finalBlock.Number
-		}
 
 		chainBlock := ChainBlock{
 			chain: finalChain,
@@ -338,38 +290,6 @@ func (p *RandomChainParams) MakeRandomChain(seed int64) (res RandomChain) {
 			res.dependencies[*execcb] = append(res.dependencies[*execcb], initcb)
 		}
 	}
-
-	// Add dependencies for candidates
-	candidateDependencyChance := p.dependencyChance
-	crossUnsafeCandidate := GetCrossUnsafeCandidate(res)
-	crossSafeCandidate := GetCrossSafeCandidate(res)
-
-	addCandidateDeps := func(candidate *ChainBlock) {
-		if candidate != nil {
-			time := candidate.block.Time
-			candidateIndex := res.cbIndices[*candidate]
-			index := candidateIndex - 1
-			// Find earliest block with the same timestamp as the candidate
-			for res.allBlocks[index].block.Time == time {
-				index--
-			}
-			// Iterate over this range of blocks and add dependencies between them
-			for i := candidateIndex; index+1 < i; i-- {
-				for r.Intn(100) < candidateDependencyChance {
-					execcb := res.allBlocks[i]
-					dependencyIndex := randomInRange(r, index+1, i)
-					initcb := res.allBlocks[dependencyIndex]
-					if initcb.block.Number == 0 {
-						continue
-					}
-					res.dependencies[*execcb] = append(res.dependencies[*execcb], initcb)
-				}
-			}
-		}
-	}
-
-	addCandidateDeps(crossUnsafeCandidate)
-	addCandidateDeps(crossSafeCandidate)
 
 	// Construct the dependencies by creating initiating/executing message pairs
 	for _, execcb := range res.allBlocks {
@@ -640,28 +560,4 @@ func InsertCycle(t *testing.T, r *rand.Rand, res *RandomChain, candidate *ChainB
 	insertExecutingMessageAt(0, res, cycleEnd, cycleStart, initiatingLog)
 	res.dependencies[*cycleEnd] = append(res.dependencies[*cycleEnd], cycleStart)
 	t.Logf("Added cyclic dependency: (%s, %2d) -> (%s, %2d)", cycleEnd.chain, cycleEnd.block.Number, cycleStart.chain, cycleStart.block.Number)
-}
-
-func GetCrossUnsafeCandidate(rc RandomChain) (block *ChainBlock) {
-	for _, chain := range rc.chainIDs {
-		if rc.chainHeads[chain].crossUnsafe < rc.chainHeads[chain].localUnsafe {
-			return &ChainBlock{
-				chain: chain,
-				block: rc.chainBlocks[chain][rc.chainHeads[chain].crossUnsafe+1],
-			}
-		}
-	}
-	return nil
-}
-
-func GetCrossSafeCandidate(rc RandomChain) (block *ChainBlock) {
-	for _, chain := range rc.chainIDs {
-		if rc.chainHeads[chain].crossSafe < rc.chainHeads[chain].localSafe {
-			return &ChainBlock{
-				chain: chain,
-				block: rc.chainBlocks[chain][rc.chainHeads[chain].crossSafe+1],
-			}
-		}
-	}
-	return nil
 }
