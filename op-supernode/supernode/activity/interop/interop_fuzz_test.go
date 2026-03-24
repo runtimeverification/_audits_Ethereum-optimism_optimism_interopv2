@@ -38,9 +38,8 @@ func FuzzVerifyInteropMessages(f *testing.F) {
 		}
 
 		randomChain := fuzzInterop.randomChain
-		safeCutoff := randomChain.cutoffs.localSafe
 
-		safeBlock := randomChain.allBlocks[safeCutoff]
+		safeBlock := randomChain.allBlocks[len(randomChain.allBlocks)-1]
 		safeTimestamp := safeBlock.block.Time
 
 		blocksAtTimestamp, err := interop.checkChainsReady(safeTimestamp)
