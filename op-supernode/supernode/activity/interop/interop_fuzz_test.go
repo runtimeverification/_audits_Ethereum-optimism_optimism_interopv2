@@ -17,8 +17,8 @@ func FuzzVerifyInteropMessages(f *testing.F) {
 			chainCount:             max(2, int(numChainsRaw>>6)),
 			minLength:              30,
 			maxLength:              60,
-			sameTimestampFrequency: 5,
-			dependencyChance:       8,
+			invalidateChance:       80,
+			dependencyChance:       20,
 			maxBlockTimeExclusive:  15,
 		}
 
@@ -46,7 +46,10 @@ func FuzzVerifyInteropMessages(f *testing.F) {
 		require.NoError(t, err)
 
 		result, err := interop.verifyInteropMessages(safeTimestamp, blocksAtTimestamp)
-		require.NoError(t, err)
+		if !randomChain.isInvalid {
+			t.Logf("timestamp: %d", safeTimestamp)
+			require.NoError(t, err)
+		}
 
 		// P1: Valid messages never produce InvalidHeads
 		require.True(t, result.IsValid(), "P1: valid messages should produce valid result, got InvalidHeads: %v", result.InvalidHeads)
@@ -93,8 +96,6 @@ func (h *interopFuzzHarness) WithParams(params RandomChainParams) *interopFuzzHa
 // L2 chains with it.
 func (h *interopFuzzHarness) WithSeed(seed int64) *interopFuzzHarness {
 	h.seed = seed
-	h.randomChain = h.params.MakeRandomChain(seed)
-	h.mocks = h.randomChain.GetContainers()
 	return h
 }
 
@@ -123,7 +124,7 @@ func (h *interopFuzzHarness) Build() *interopFuzzHarness {
 	if h.skipBuild {
 		return h
 	}
-	h.randomChain = h.params.MakeRandomChain(h.seed)
+	h.randomChain = h.params.MakeRandomChain(h.t, h.seed)
 
 	// Find an activationTime that all chains can satisfy
 	for _, blocks := range h.randomChain.chainBlocks {
