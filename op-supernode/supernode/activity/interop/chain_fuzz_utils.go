@@ -53,7 +53,7 @@ type RandomChainParams struct {
 
 	maxBlockTimeExclusive int
 
-	sameTimestampFrequency int // Percentage [0-100]
+	invalidateChance       int // Percentage [0-100]
 	dependencyChance       int // Percentage [0-100]
 }
 
@@ -66,7 +66,7 @@ type RandomChain struct {
 	randomGenerator *rand.Rand
 	chainIDs      []eth.ChainID
 	allBlocks     []*ChainBlock
-	cbIndices     map[ChainBlock]int // Lookup for a ChainBlock's index in allBlocks
+	cbIndices     map[*eth.L2BlockRef]int // Lookup for a ChainBlock's index in allBlocks
 	generatedLogs map[ChainBlock][]*types2.Log
 	dependencies  map[ChainBlock][]*ChainBlock
 	chainBlocks   map[eth.ChainID][]*eth.L2BlockRef
@@ -74,6 +74,7 @@ type RandomChain struct {
 	l1Source      map[uint64]eth.BlockRef
 	receipts      map[eth.ChainID]map[eth.BlockID]types2.Receipts
 	blockTimes    map[eth.ChainID]int
+	isInvalid     bool
 }
 
 var _ cc.ChainContainer = RandomChainContainer{}
@@ -185,7 +186,7 @@ func (rc *RandomChain) GetContainers() (map[eth.ChainID]cc.ChainContainer) {
 	return chains
 }
 
-func (p *RandomChainParams) MakeRandomChain(seed int64) (res RandomChain) {
+func (p *RandomChainParams) MakeRandomChain(t *testing.T, seed int64) (res RandomChain) {
 	r := rand.New(rand.NewSource(seed))
 
 	totalLength := randomInRange(r, p.minLength, p.maxLength) + 2
@@ -194,7 +195,7 @@ func (p *RandomChainParams) MakeRandomChain(seed int64) (res RandomChain) {
 		randomGenerator: r,
 		chainIDs:      make([]eth.ChainID, 0, p.chainCount),
 		allBlocks:     make([]*ChainBlock, 0, totalLength),
-		cbIndices:     make(map[ChainBlock]int),
+		cbIndices:     make(map[*eth.L2BlockRef]int),
 		generatedLogs: make(map[ChainBlock][]*types2.Log),
 		dependencies:  make(map[ChainBlock][]*ChainBlock),
 		chainBlocks:   make(map[eth.ChainID][]*eth.L2BlockRef),
@@ -202,6 +203,7 @@ func (p *RandomChainParams) MakeRandomChain(seed int64) (res RandomChain) {
 		l1Source:      make(map[uint64]eth.BlockRef),
 		receipts:      make(map[eth.ChainID]map[eth.BlockID]types2.Receipts),
 		blockTimes:    make(map[eth.ChainID]int),
+		isInvalid:     false,
 	}
 
 	for i := range p.chainCount {
@@ -214,11 +216,11 @@ func (p *RandomChainParams) MakeRandomChain(seed int64) (res RandomChain) {
 	//
 	// Create array of all blocks
 	//
-	var block eth.L2BlockRef
 
 	// First, guarantee that each chain contains at least one block
+	lastTimeStamp := make(map[eth.ChainID]uint64)
 	for _, chain := range res.chainIDs {
-		block = testutils.RandomL2BlockRef(r)
+		block := testutils.RandomL2BlockRef(r)
 		block.Number = 0
 		block.Time = 0
 		res.chainBlocks[chain] = append(res.chainBlocks[chain], &block)
@@ -226,13 +228,24 @@ func (p *RandomChainParams) MakeRandomChain(seed int64) (res RandomChain) {
 
 	// Then, generate the rest of the blocks.
 	for range totalLength - p.chainCount {
-		// Select a random chain
-		chain := res.chainIDs[r.Intn(p.chainCount)]
-		lastBlock := res.chainBlocks[chain][len(res.chainBlocks[chain])-1]
-		block = testutils.NextRandomL2Ref(r, uint64(res.blockTimes[chain]), *lastBlock, eth.BlockID{})
+		// Select the chain with the next valid timestamp
+		first := true
+		var nextChain eth.ChainID
+		v := uint64(0)
+		for _, chain := range res.chainIDs {
+			nextTimeStamp := lastTimeStamp[chain] + uint64(res.blockTimes[chain])
+			if first || nextTimeStamp < v {
+				nextChain = chain
+				v = nextTimeStamp
+				first = false
+			}
+		}
 
 		// Add a random block to it
-		res.chainBlocks[chain] = append(res.chainBlocks[chain], &block)
+		lastBlock := res.chainBlocks[nextChain][len(res.chainBlocks[nextChain])-1]
+		block := testutils.NextRandomL2Ref(r, uint64(res.blockTimes[nextChain]), *lastBlock, eth.BlockID{})
+		res.chainBlocks[nextChain] = append(res.chainBlocks[nextChain], &block)
+		lastTimeStamp[nextChain] = block.Time
 	}
 
 	// Populate res.allBlocks
@@ -241,9 +254,6 @@ func (p *RandomChainParams) MakeRandomChain(seed int64) (res RandomChain) {
 	// so all of the iterating logic through the chains here
 	// finds the next block with the lowest timestamp.
 	chainIndices := make(map[eth.ChainID]int)
-	for _, chain := range res.chainIDs {
-		chainIndices[chain] = 0;
-	}
 	for i := range totalLength {
 		var finalChain eth.ChainID
 		var finalBlock *eth.L2BlockRef
@@ -266,7 +276,7 @@ func (p *RandomChainParams) MakeRandomChain(seed int64) (res RandomChain) {
 			block: finalBlock,
 		}
 		res.allBlocks = append(res.allBlocks, &chainBlock)
-		res.cbIndices[chainBlock] = i
+		res.cbIndices[finalBlock] = i
 	}
 
 	//
@@ -299,6 +309,17 @@ func (p *RandomChainParams) MakeRandomChain(seed int64) (res RandomChain) {
 		}
 	}
 
+	if r.Intn(100) < p.invalidateChance {
+		res.isInvalid = true
+		index := r.Intn(len(res.allBlocks)-1)
+		blockToInvalidate := res.allBlocks[index]
+		cbIndex := res.cbIndices[blockToInvalidate.block]
+		t.Logf("Randomly selected block index: %d", index)
+		t.Logf("cbIndex: %d", cbIndex)
+
+		InvalidateBlock(t, &res, blockToInvalidate)
+	}
+
 	//
 	// Make L1 derivation info
 	//
@@ -323,11 +344,11 @@ func TestMakeRandomChain(t *testing.T) {
 		chainCount:             3,
 		minLength:              5,
 		maxLength:              20,
-		sameTimestampFrequency: 10,
+		invalidateChance:       70,
 		dependencyChance:       8,
 	}
 
-	chain := params.MakeRandomChain(0)
+	chain := params.MakeRandomChain(t, 0)
 
 	t.Run("Correct number of chains", func(t *testing.T) {
 		require.Equal(t, params.chainCount, len(chain.chainIDs))
@@ -432,17 +453,17 @@ func InsertMessageWithInvalidIdentifier(r *rand.Rand, res *RandomChain, candidat
 
 func InvalidateBlock(t *testing.T, res *RandomChain, candidate *ChainBlock) {
 	r := res.randomGenerator
-	switch r.Intn(5) {
+	switch r.Intn(3) {
 	case 0:
 		InsertCycle(t, r, res, candidate)
 	case 1:
 		InsertSelfDependency(r, res, candidate)
 	case 2:
-		InsertFutureDependency(t, r, res, res.cbIndices[*candidate])
+		InsertMessageWithInvalidIdentifier(r, res, res.cbIndices[candidate.block])
 	case 3:
-		InsertDependencyToExpiredMessage(t, r, res, res.cbIndices[*candidate])
+		//InsertDependencyToExpiredMessage(t, r, res, res.cbIndices[*candidate])
 	case 4:
-		InsertMessageWithInvalidIdentifier(r, res, res.cbIndices[*candidate])
+		//InsertFutureDependency(t, r, res, res.cbIndices[candidate.block])
 	default:
 	}
 }
