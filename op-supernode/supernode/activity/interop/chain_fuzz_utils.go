@@ -186,6 +186,64 @@ func (rc *RandomChain) GetContainers() (map[eth.ChainID]cc.ChainContainer) {
 	return chains
 }
 
+// Merge all of the chains' blocks from separate arrays into one, ordered by timestamp
+func MergeBlocks(chainBlocks map[eth.ChainID][]*eth.L2BlockRef) []*ChainBlock {
+	totalLength := 0
+	for _, blocks := range chainBlocks {
+		totalLength += len(blocks)
+	}
+
+	allBlocks := make([]*ChainBlock, 0, totalLength)
+	chainIndices := make(map[eth.ChainID]int)
+	for range totalLength {
+		var finalChain eth.ChainID
+		var finalBlock *eth.L2BlockRef
+
+		for chain := range chainBlocks {
+			idx := chainIndices[chain]
+			if idx < len(chainBlocks[chain]) {
+				block := chainBlocks[chain][idx]
+				if finalBlock == nil || block.Time < finalBlock.Time {
+					finalChain = chain
+					finalBlock = block
+				}
+			}
+		}
+
+		chainIndices[finalChain]++
+
+		chainBlock := ChainBlock{
+			chain: finalChain,
+			block: finalBlock,
+		}
+		allBlocks = append(allBlocks, &chainBlock)
+	}
+
+	return allBlocks
+}
+
+// Given the chains' blocks and blockTimes, find the chain for which its next block wont put
+// the other chains' current blocks behind on the new timestamp
+func NextValidChain(chainBlocks map[eth.ChainID][]*eth.L2BlockRef, blockTimes map[eth.ChainID]int) eth.ChainID {
+	lastTimeStamp := make(map[eth.ChainID]uint64)
+	for chain := range chainBlocks {
+		blocks := chainBlocks[chain]
+		lastTimeStamp[chain] = blocks[len(blocks)-1].Time
+	}
+	first := true
+	var nextChain eth.ChainID
+	v := uint64(0)
+	for chain := range chainBlocks {
+		nextTimeStamp := lastTimeStamp[chain] + uint64(blockTimes[chain])
+		if first || nextTimeStamp < v {
+			nextChain = chain
+			v = nextTimeStamp
+			first = false
+		}
+	}
+	return nextChain
+}
+
 func (p *RandomChainParams) MakeRandomChain(t *testing.T, seed int64) (res RandomChain) {
 	r := rand.New(rand.NewSource(seed))
 
@@ -229,17 +287,7 @@ func (p *RandomChainParams) MakeRandomChain(t *testing.T, seed int64) (res Rando
 	// Then, generate the rest of the blocks.
 	for range totalLength - p.chainCount {
 		// Select the chain with the next valid timestamp
-		first := true
-		var nextChain eth.ChainID
-		v := uint64(0)
-		for _, chain := range res.chainIDs {
-			nextTimeStamp := lastTimeStamp[chain] + uint64(res.blockTimes[chain])
-			if first || nextTimeStamp < v {
-				nextChain = chain
-				v = nextTimeStamp
-				first = false
-			}
-		}
+		nextChain := NextValidChain(res.chainBlocks, res.blockTimes)
 
 		// Add a random block to it
 		lastBlock := res.chainBlocks[nextChain][len(res.chainBlocks[nextChain])-1]
@@ -249,35 +297,7 @@ func (p *RandomChainParams) MakeRandomChain(t *testing.T, seed int64) (res Rando
 	}
 
 	// Populate res.allBlocks
-	//
-	// The blocks need to be added in order by timestamp,
-	// so all of the iterating logic through the chains here
-	// finds the next block with the lowest timestamp.
-	chainIndices := make(map[eth.ChainID]int)
-	for i := range totalLength {
-		var finalChain eth.ChainID
-		var finalBlock *eth.L2BlockRef
-
-		for _, chain := range res.chainIDs {
-			idx := chainIndices[chain]
-			if idx < len(res.chainBlocks[chain]) {
-				block := res.chainBlocks[chain][idx]
-				if finalBlock == nil || block.Time < finalBlock.Time {
-					finalChain = chain
-					finalBlock = block
-				}
-			}
-		}
-
-		chainIndices[finalChain]++
-
-		chainBlock := ChainBlock{
-			chain: finalChain,
-			block: finalBlock,
-		}
-		res.allBlocks = append(res.allBlocks, &chainBlock)
-		res.cbIndices[finalBlock] = i
-	}
+	res.allBlocks = MergeBlocks(res.chainBlocks)
 
 	//
 	// Create random dependencies between all blocks
