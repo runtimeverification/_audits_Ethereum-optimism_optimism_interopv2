@@ -63,6 +63,7 @@ type L1Assignments struct {
 }
 
 type RandomChain struct {
+	t             *testing.T
 	randomGenerator *rand.Rand
 	chainIDs      []eth.ChainID
 	allBlocks     []*ChainBlock
@@ -174,12 +175,12 @@ func (c RandomChainContainer) SetResetCallback(cb cc.ResetCallback) {
 	//TODO
 }
 
-func (rc *RandomChain) GetContainers() (map[eth.ChainID]cc.ChainContainer) {
+func (rc RandomChain) GetContainers() (map[eth.ChainID]cc.ChainContainer) {
 	chains := make(map[eth.ChainID]cc.ChainContainer);
 	for _, chain := range rc.chainIDs {
 		container := RandomChainContainer {
 			chainID:     chain,
-			randomChain: rc,
+			randomChain: &rc,
 		}
 		chains[chain] = container
 	}
@@ -250,6 +251,7 @@ func (p *RandomChainParams) MakeRandomChain(t *testing.T, seed int64) (res Rando
 	totalLength := randomInRange(r, p.minLength, p.maxLength) + 2
 
 	res = RandomChain{
+		t:             t,
 		randomGenerator: r,
 		chainIDs:      make([]eth.ChainID, 0, p.chainCount),
 		allBlocks:     make([]*ChainBlock, 0, totalLength),
@@ -304,7 +306,7 @@ func (p *RandomChainParams) MakeRandomChain(t *testing.T, seed int64) (res Rando
 	//
 	for initIndex, initcb := range res.allBlocks {
 		// Add an unimportant message at index 0 that can be modified later by the InsertCycle function
-		addRandomInitiatingMessage(r, &res, initcb)
+		res.addRandomInitiatingMessage(initcb)
 
 		block := initcb.block
 		if block.Number == 0 {
@@ -324,8 +326,8 @@ func (p *RandomChainParams) MakeRandomChain(t *testing.T, seed int64) (res Rando
 	// Construct the dependencies by creating initiating/executing message pairs
 	for _, execcb := range res.allBlocks {
 		for _, initcb := range res.dependencies[*execcb] {
-			initiatingLog := addRandomInitiatingMessage(r, &res, initcb)
-			addExecutingMessage(&res, execcb, initcb, initiatingLog)
+			initiatingLog := res.addRandomInitiatingMessage(initcb)
+			res.addExecutingMessage(execcb, initcb, initiatingLog)
 		}
 	}
 
@@ -337,7 +339,7 @@ func (p *RandomChainParams) MakeRandomChain(t *testing.T, seed int64) (res Rando
 		t.Logf("Randomly selected block index: %d", index)
 		t.Logf("cbIndex: %d", cbIndex)
 
-		InvalidateBlock(t, &res, blockToInvalidate)
+		res.InvalidateBlock(blockToInvalidate)
 	}
 
 	//
@@ -375,44 +377,44 @@ func TestMakeRandomChain(t *testing.T) {
 	})
 }
 
-func addRandomInitiatingMessage(r *rand.Rand, res *RandomChain, initcb *ChainBlock) *types2.Log {
-	initiatingLog := testutils.RandomLog(r)
-	initiatingLog.Index = uint(len(res.generatedLogs[*initcb]))
-	res.generatedLogs[*initcb] = append(res.generatedLogs[*initcb], initiatingLog)
+func (rc RandomChain) addRandomInitiatingMessage(initcb *ChainBlock) *types2.Log {
+	initiatingLog := testutils.RandomLog(rc.randomGenerator)
+	initiatingLog.Index = uint(len(rc.generatedLogs[*initcb]))
+	rc.generatedLogs[*initcb] = append(rc.generatedLogs[*initcb], initiatingLog)
 	return initiatingLog
 }
 
-func addExecutingMessage(res *RandomChain, execcb *ChainBlock, initcb *ChainBlock, initiatingLog *types2.Log) {
+func (rc RandomChain) addExecutingMessage(execcb *ChainBlock, initcb *ChainBlock, initiatingLog *types2.Log) {
 	execLog := ExecMsgForLog(initcb.chain, *initcb.block, initiatingLog)
-	execLog.Index = uint(len(res.generatedLogs[*execcb]))
-	res.generatedLogs[*execcb] = append(res.generatedLogs[*execcb], execLog)
+	execLog.Index = uint(len(rc.generatedLogs[*execcb]))
+	rc.generatedLogs[*execcb] = append(rc.generatedLogs[*execcb], execLog)
 }
 
-func addExecutingMessageWithDependency(res *RandomChain, execcb *ChainBlock, initcb *ChainBlock, initiatingLog *types2.Log) {
-	addExecutingMessage(res, execcb, initcb, initiatingLog)
-	res.dependencies[*execcb] = append(res.dependencies[*execcb], initcb)
+func (rc RandomChain) addExecutingMessageWithDependency(execcb *ChainBlock, initcb *ChainBlock, initiatingLog *types2.Log) {
+	rc.addExecutingMessage(execcb, initcb, initiatingLog)
+	rc.dependencies[*execcb] = append(rc.dependencies[*execcb], initcb)
 }
 
-func addInvalidExecutingMessage(r *rand.Rand, res *RandomChain, execcb *ChainBlock, initcb *ChainBlock, initiatingLog *types2.Log) {
-	execLog := InvalidExecMsgForLog(r, res, initcb.chain, *initcb.block, initiatingLog)
-	execLog.Index = uint(len(res.generatedLogs[*execcb]))
-	res.generatedLogs[*execcb] = append(res.generatedLogs[*execcb], execLog)
+func (rc RandomChain) addInvalidExecutingMessage(execcb *ChainBlock, initcb *ChainBlock, initiatingLog *types2.Log) {
+	execLog := rc.InvalidExecMsgForLog(initcb.chain, *initcb.block, initiatingLog)
+	execLog.Index = uint(len(rc.generatedLogs[*execcb]))
+	rc.generatedLogs[*execcb] = append(rc.generatedLogs[*execcb], execLog)
 }
 
-func insertExecutingMessageAt(i uint, res *RandomChain, execcb *ChainBlock, initcb *ChainBlock, initiatingLog *types2.Log) {
+func (rc RandomChain) insertExecutingMessageAt(i uint, execcb *ChainBlock, initcb *ChainBlock, initiatingLog *types2.Log) {
 	execLog := ExecMsgForLog(initcb.chain, *initcb.block, initiatingLog)
 	execLog.Index = i
-	res.generatedLogs[*execcb][i] = execLog
+	rc.generatedLogs[*execcb][i] = execLog
 }
 
-func GenerateReceiptsFromLogs(res *RandomChain) {
-	for _, cb := range res.allBlocks {
+func (rc RandomChain) GenerateReceiptsFromLogs() {
+	for _, cb := range rc.allBlocks {
 		chainid, block := cb.chain, cb.block
-		logs := res.generatedLogs[*cb]
+		logs := rc.generatedLogs[*cb]
 		rcpt := types2.Receipt{
 			Logs: logs,
 		}
-		res.receipts[chainid][block.ID()] = types2.Receipts{&rcpt};
+		rc.receipts[chainid][block.ID()] = types2.Receipts{&rcpt};
 	}
 }
 
@@ -421,7 +423,8 @@ func randomInRange(r *rand.Rand, lowerIncluding int, upperExcluding int) int {
 	return r.Intn(upperExcluding-lowerIncluding) + lowerIncluding
 }
 
-func InvalidExecMsgForLog(r *rand.Rand, res *RandomChain, chain eth.ChainID, block eth.L2BlockRef, log *types2.Log) *types2.Log {
+func (rc RandomChain) InvalidExecMsgForLog(chain eth.ChainID, block eth.L2BlockRef, log *types2.Log) *types2.Log {
+	r := rc.randomGenerator
 	msg := types.Message{
 		Identifier: types.Identifier{
 			Origin:      log.Address,
@@ -448,7 +451,7 @@ func InvalidExecMsgForLog(r *rand.Rand, res *RandomChain, chain eth.ChainID, blo
 		msg.Identifier.Timestamp -= uint64(randomInRange(r, 1, 100))
 	case 4:
 		// Invalid chain ID
-		impossibleChainID := len(res.chainIDs)
+		impossibleChainID := len(rc.chainIDs)
 		msg.Identifier.ChainID = eth.ChainIDFromUInt64(uint64(impossibleChainID))
 	}
 
@@ -461,25 +464,26 @@ func InvalidExecMsgForLog(r *rand.Rand, res *RandomChain, chain eth.ChainID, blo
 	}
 }
 
-func InsertMessageWithInvalidIdentifier(r *rand.Rand, res *RandomChain, candidateIndex int) {
-	candidateBlock := res.allBlocks[candidateIndex]
+func (rc RandomChain) InsertMessageWithInvalidIdentifier(candidateIndex int) {
+	r := rc.randomGenerator
+	candidateBlock := rc.allBlocks[candidateIndex]
 	randomIndex := r.Intn(candidateIndex + 1)
-	randomBlock := res.allBlocks[randomIndex]
-	randomLogIndex := r.Intn(len(res.generatedLogs[*randomBlock]))
-	randomLog := res.generatedLogs[*randomBlock][randomLogIndex]
+	randomBlock := rc.allBlocks[randomIndex]
+	randomLogIndex := r.Intn(len(rc.generatedLogs[*randomBlock]))
+	randomLog := rc.generatedLogs[*randomBlock][randomLogIndex]
 
-	addInvalidExecutingMessage(r, res, candidateBlock, randomBlock, randomLog)
+	rc.addInvalidExecutingMessage(candidateBlock, randomBlock, randomLog)
 }
 
-func InvalidateBlock(t *testing.T, res *RandomChain, candidate *ChainBlock) {
-	r := res.randomGenerator
+func (rc RandomChain) InvalidateBlock(candidate *ChainBlock) {
+	r := rc.randomGenerator
 	switch r.Intn(3) {
 	case 0:
-		InsertCycle(t, r, res, candidate)
+		rc.InsertCycle(candidate)
 	case 1:
-		InsertSelfDependency(r, res, candidate)
+		rc.InsertSelfDependency(candidate)
 	case 2:
-		InsertMessageWithInvalidIdentifier(r, res, res.cbIndices[candidate.block])
+		rc.InsertMessageWithInvalidIdentifier(rc.cbIndices[candidate.block])
 	case 3:
 		//InsertDependencyToExpiredMessage(t, r, res, res.cbIndices[*candidate])
 	case 4:
@@ -488,25 +492,30 @@ func InvalidateBlock(t *testing.T, res *RandomChain, candidate *ChainBlock) {
 	}
 }
 
-func InsertFutureDependency(t *testing.T, r *rand.Rand, res *RandomChain, candidateIndex int) {
-	candidateBlock := res.allBlocks[candidateIndex]
+func (rc RandomChain) InsertFutureDependency(candidateIndex int) {
+	t := rc.t
+	r := rc.randomGenerator
+	candidateBlock := rc.allBlocks[candidateIndex]
 	t.Logf("Inserting a future dependency in candidate (%s, %2d)'s hazard set", candidateBlock.chain, candidateBlock.block.Number)
 
 	// Find the next block with a timestamp in the future (guaranteed to exist since we added a special block at the end)
 	i := candidateIndex + 1
-	for res.allBlocks[i].block.Time <= candidateBlock.block.Time {
+	for rc.allBlocks[i].block.Time <= candidateBlock.block.Time {
 		i++
 	}
 
 	// Randomly pick a future block and create an executing message to it
-	futureIndex := randomInRange(r, i, len(res.allBlocks))
-	futureBlock := res.allBlocks[futureIndex]
-	initiatingLog := addRandomInitiatingMessage(r, res, futureBlock)
-	addExecutingMessageWithDependency(res, candidateBlock, futureBlock, initiatingLog)
+	futureIndex := randomInRange(r, i, len(rc.allBlocks))
+	futureBlock := rc.allBlocks[futureIndex]
+	initiatingLog := rc.addRandomInitiatingMessage(futureBlock)
+	rc.addExecutingMessageWithDependency(candidateBlock, futureBlock, initiatingLog)
 }
 
-func InsertDependencyToExpiredMessage(t *testing.T, r *rand.Rand, res *RandomChain, candidateIndex int) {
-	candidate := res.allBlocks[candidateIndex]
+func (rc RandomChain) InsertDependencyToExpiredMessage(candidateIndex int) {
+	t := rc.t
+	r := rc.randomGenerator
+
+	candidate := rc.allBlocks[candidateIndex]
 
 	// We set the timestamps so that this is true for every block that can be selected as candidate
 	require.Less(t, uint64(params.MessageExpiryTimeSecondsInterop), candidate.block.Time)
@@ -516,30 +525,34 @@ func InsertDependencyToExpiredMessage(t *testing.T, r *rand.Rand, res *RandomCha
 
 	// Iterate until we find the first unexpired block
 	i := 0
-	for res.allBlocks[i].block.Time < expiryTimestamp {
+	for rc.allBlocks[i].block.Time < expiryTimestamp {
 		i++
 	}
 
 	// i is at least 1 since the block at index 0 is guaranteed to be expired
 	expiredIndex := r.Intn(i)
-	expiredBlock := res.allBlocks[expiredIndex]
-	initiatingLog := addRandomInitiatingMessage(r, res, expiredBlock)
-	addExecutingMessageWithDependency(res, candidate, expiredBlock, initiatingLog)
+	expiredBlock := rc.allBlocks[expiredIndex]
+	initiatingLog := rc.addRandomInitiatingMessage(expiredBlock)
+	rc.addExecutingMessageWithDependency(candidate, expiredBlock, initiatingLog)
 }
 
-func InsertSelfDependency(r *rand.Rand, res *RandomChain, candidate *ChainBlock) {
+func (rc RandomChain) InsertSelfDependency(candidate *ChainBlock) {
+	r := rc.randomGenerator
+
 	// Create a random initiating message to be inserted at index N+1
 	initiatingLog := testutils.RandomLog(r)
-	initiatingLog.Index = uint(len(res.generatedLogs[*candidate]) + 1)
+	initiatingLog.Index = uint(len(rc.generatedLogs[*candidate]) + 1)
 
 	// Insert executing message at index N
-	addExecutingMessageWithDependency(res, candidate, candidate, initiatingLog)
+	rc.addExecutingMessageWithDependency(candidate, candidate, initiatingLog)
 
 	// Insert initiating message at index N+1
-	res.generatedLogs[*candidate] = append(res.generatedLogs[*candidate], initiatingLog)
+	rc.generatedLogs[*candidate] = append(rc.generatedLogs[*candidate], initiatingLog)
 }
 
-func listHazards(t *testing.T, res *RandomChain, candidate *ChainBlock) []*ChainBlock {
+func (rc RandomChain) listHazards(candidate *ChainBlock) []*ChainBlock {
+	t := rc.t
+
 	hazards := make([]*ChainBlock, 0)
 	includedHazards := make(map[eth.ChainID]*ChainBlock)
 
@@ -562,7 +575,7 @@ func listHazards(t *testing.T, res *RandomChain, candidate *ChainBlock) []*Chain
 			includedHazards[hazard.chain] = hazard
 
 			// For each new hazard, add all dependencies with the same timestamp to the stack
-			for _, dependency := range res.dependencies[*hazard] {
+			for _, dependency := range rc.dependencies[*hazard] {
 				if dependency.block.Time == candidate.block.Time {
 					stack = append(stack, dependency)
 				}
@@ -573,10 +586,13 @@ func listHazards(t *testing.T, res *RandomChain, candidate *ChainBlock) []*Chain
 	return hazards
 }
 
-func InsertCycle(t *testing.T, r *rand.Rand, res *RandomChain, candidate *ChainBlock) {
+func (rc RandomChain) InsertCycle(candidate *ChainBlock) {
+	t := rc.t
+	r := rc.randomGenerator
+
 	t.Logf("Inserting a cycle in candidate (%s, %2d)'s hazard set", candidate.chain, candidate.block.Number)
 
-	candidateHazards := listHazards(t, res, candidate)
+	candidateHazards := rc.listHazards(candidate)
 	t.Logf("Size of (%s, %2d)'s hazard set: %d", candidate.chain, candidate.block.Number, len(candidateHazards))
 	cycleStart := candidateHazards[r.Intn(len(candidateHazards))]
 	t.Logf("Picked random hazard set element to start the cycle: (%s, %2d)", cycleStart.chain, cycleStart.block.Number)
@@ -587,7 +603,7 @@ func InsertCycle(t *testing.T, r *rand.Rand, res *RandomChain, candidate *ChainB
 		require.Equal(t, cycleStart.block.Number, candidate.block.Number)
 		subHazards = candidateHazards
 	} else {
-		subHazards = listHazards(t, res, cycleStart)
+		subHazards = rc.listHazards(cycleStart)
 		t.Logf("Size of (%s, %2d)'s hazard set: %d", cycleStart.chain, cycleStart.block.Number, len(subHazards))
 	}
 
@@ -595,10 +611,10 @@ func InsertCycle(t *testing.T, r *rand.Rand, res *RandomChain, candidate *ChainB
 	t.Logf("Picked random hazard set element to end the cycle: (%s, %2d)", cycleEnd.chain, cycleEnd.block.Number)
 
 	// Add executing message from first log of cycleEnd to last log of cycleStart
-	lastIndex := len(res.generatedLogs[*cycleStart]) - 1
-	initiatingLog := res.generatedLogs[*cycleStart][lastIndex]
+	lastIndex := len(rc.generatedLogs[*cycleStart]) - 1
+	initiatingLog := rc.generatedLogs[*cycleStart][lastIndex]
 	// Replace dummy message at index 0
-	insertExecutingMessageAt(0, res, cycleEnd, cycleStart, initiatingLog)
-	res.dependencies[*cycleEnd] = append(res.dependencies[*cycleEnd], cycleStart)
+	rc.insertExecutingMessageAt(0, cycleEnd, cycleStart, initiatingLog)
+	rc.dependencies[*cycleEnd] = append(rc.dependencies[*cycleEnd], cycleStart)
 	t.Logf("Added cyclic dependency: (%s, %2d) -> (%s, %2d)", cycleEnd.chain, cycleEnd.block.Number, cycleStart.chain, cycleStart.block.Number)
 }
