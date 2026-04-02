@@ -277,12 +277,12 @@ func (p *RandomChainParams) MakeRandomChain(t *testing.T, seed int64) (res Rando
 	//
 
 	// First, guarantee that each chain contains at least one block
-	lastTimeStamp := make(map[eth.ChainID]uint64)
 	for _, chain := range res.chainIDs {
 		block := testutils.RandomL2BlockRef(r)
 		block.Number = 0
 		block.Time = 0
 		res.chainBlocks[chain] = append(res.chainBlocks[chain], &block)
+		res.addRandomLog(chain, &block)
 	}
 
 	// Then, generate the rest of the blocks.
@@ -294,7 +294,7 @@ func (p *RandomChainParams) MakeRandomChain(t *testing.T, seed int64) (res Rando
 		lastBlock := res.chainBlocks[nextChain][len(res.chainBlocks[nextChain])-1]
 		block := testutils.NextRandomL2Ref(r, uint64(res.blockTimes[nextChain]), *lastBlock, eth.BlockID{})
 		res.chainBlocks[nextChain] = append(res.chainBlocks[nextChain], &block)
-		lastTimeStamp[nextChain] = block.Time
+		res.addRandomLog(nextChain, &block)
 	}
 
 	// Populate res.allBlocks
@@ -304,9 +304,6 @@ func (p *RandomChainParams) MakeRandomChain(t *testing.T, seed int64) (res Rando
 	// Create random dependencies between all blocks
 	//
 	for initIndex, initcb := range res.allBlocks {
-		// Add an unimportant message at index 0 that can be modified later by the InsertCycle function
-		res.addRandomInitiatingMessage(initcb)
-
 		block := initcb.block
 		if block.Number == 0 {
 			continue
@@ -315,18 +312,8 @@ func (p *RandomChainParams) MakeRandomChain(t *testing.T, seed int64) (res Rando
 		for r.Intn(100) < p.dependencyChance {
 			execIndex := randomInRange(r, initIndex, totalLength)
 			execcb := res.allBlocks[execIndex]
-			if block.Number == 0 {
-				continue
-			}
-			res.dependencies[execcb] = append(res.dependencies[execcb], initcb)
-		}
-	}
-
-	// Construct the dependencies by creating initiating/executing message pairs
-	for _, execcb := range res.allBlocks {
-		for _, initcb := range res.dependencies[execcb] {
-			initiatingLog := res.addRandomInitiatingMessage(initcb)
-			res.addExecutingMessage(execcb, initcb, initiatingLog)
+			initiatingLog := res.addRandomLogChainBlock(initcb)
+			res.addExecutingMessageWithDependency(execcb, initcb, initiatingLog)
 		}
 	}
 
@@ -376,7 +363,14 @@ func TestMakeRandomChain(t *testing.T) {
 	})
 }
 
-func (rc RandomChain) addRandomInitiatingMessage(initcb ChainBlock) *types2.Log {
+func (rc RandomChain) addRandomLog(chain eth.ChainID, block *eth.L2BlockRef) *types2.Log {
+	return rc.addRandomLogChainBlock(ChainBlock{
+		chain: chain,
+		block: block,
+	})
+}
+
+func (rc RandomChain) addRandomLogChainBlock(initcb ChainBlock) *types2.Log {
 	initiatingLog := testutils.RandomLog(rc.randomGenerator)
 	initiatingLog.Index = uint(len(rc.generatedLogs[initcb]))
 	rc.generatedLogs[initcb] = append(rc.generatedLogs[initcb], initiatingLog)
@@ -504,7 +498,7 @@ func (rc RandomChain) InsertFutureDependency(candidateIndex int) {
 	// Randomly pick a future block and create an executing message to it
 	futureIndex := randomInRange(r, i, len(rc.allBlocks))
 	futureBlock := rc.allBlocks[futureIndex]
-	initiatingLog := rc.addRandomInitiatingMessage(futureBlock)
+	initiatingLog := rc.addRandomLogChainBlock(futureBlock)
 	rc.addExecutingMessageWithDependency(candidateBlock, futureBlock, initiatingLog)
 }
 
