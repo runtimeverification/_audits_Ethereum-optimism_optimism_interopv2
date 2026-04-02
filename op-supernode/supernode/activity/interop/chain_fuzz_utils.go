@@ -319,7 +319,7 @@ func (p *RandomChainParams) MakeRandomChain(t *testing.T, seed int64) (res Rando
 
 	if r.Intn(100) < p.invalidateChance {
 		res.isInvalid = true
-		index := r.Intn(len(res.allBlocks)-1)
+		index := r.Intn(len(res.allBlocks)-2)
 		blockToInvalidate := res.allBlocks[index]
 		cbIndex := res.cbIndices[blockToInvalidate.block]
 		t.Logf("Randomly selected block index: %d", index)
@@ -478,7 +478,7 @@ func (rc RandomChain) InvalidateBlock(candidate ChainBlock) {
 	case 2:
 		rc.InsertMessageWithInvalidIdentifier(rc.cbIndices[candidate.block])
 	case 3:
-		//InsertFutureDependency(t, r, res, res.cbIndices[candidate.block])
+		rc.InsertFutureDependency(rc.cbIndices[candidate.block])
 	default:
 	}
 }
