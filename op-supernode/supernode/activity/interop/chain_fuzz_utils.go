@@ -13,7 +13,6 @@ import (
 	"github.com/ethereum/go-ethereum"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/stretchr/testify/require"
-	"github.com/ethereum-optimism/optimism/op-node/params"
 	"github.com/ethereum-optimism/optimism/op-service/testutils"
 	"github.com/ethereum-optimism/optimism/op-supernode/supernode/activity"
 	"github.com/ethereum-optimism/optimism/op-supervisor/supervisor/backend/processors"
@@ -485,8 +484,6 @@ func (rc RandomChain) InvalidateBlock(candidate ChainBlock) {
 	case 2:
 		rc.InsertMessageWithInvalidIdentifier(rc.cbIndices[candidate.block])
 	case 3:
-		//InsertDependencyToExpiredMessage(t, r, res, res.cbIndices[*candidate])
-	case 4:
 		//InsertFutureDependency(t, r, res, res.cbIndices[candidate.block])
 	default:
 	}
@@ -509,31 +506,6 @@ func (rc RandomChain) InsertFutureDependency(candidateIndex int) {
 	futureBlock := rc.allBlocks[futureIndex]
 	initiatingLog := rc.addRandomInitiatingMessage(futureBlock)
 	rc.addExecutingMessageWithDependency(candidateBlock, futureBlock, initiatingLog)
-}
-
-func (rc RandomChain) InsertDependencyToExpiredMessage(candidateIndex int) {
-	t := rc.t
-	r := rc.randomGenerator
-
-	candidate := rc.allBlocks[candidateIndex]
-
-	// We set the timestamps so that this is true for every block that can be selected as candidate
-	require.Less(t, uint64(params.MessageExpiryTimeSecondsInterop), candidate.block.Time)
-
-	// Any timestamp below this is expired
-	expiryTimestamp := candidate.block.Time - params.MessageExpiryTimeSecondsInterop
-
-	// Iterate until we find the first unexpired block
-	i := 0
-	for rc.allBlocks[i].block.Time < expiryTimestamp {
-		i++
-	}
-
-	// i is at least 1 since the block at index 0 is guaranteed to be expired
-	expiredIndex := r.Intn(i)
-	expiredBlock := rc.allBlocks[expiredIndex]
-	initiatingLog := rc.addRandomInitiatingMessage(expiredBlock)
-	rc.addExecutingMessageWithDependency(candidate, expiredBlock, initiatingLog)
 }
 
 func (rc RandomChain) InsertSelfDependency(candidate ChainBlock) {
