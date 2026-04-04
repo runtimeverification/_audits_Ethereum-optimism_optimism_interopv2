@@ -244,6 +244,29 @@ func NextValidChain(chainBlocks map[eth.ChainID][]*eth.L2BlockRef, blockTimes ma
 	return nextChain
 }
 
+func SameTimeStampSets(blocks []ChainBlock) [][]ChainBlock {
+	res := make([][]ChainBlock, 0)
+	i := 0
+	nextSet := make([]ChainBlock, 0)
+	for i < len(blocks)-1 {
+		if blocks[i].block.Time != blocks[i+1].block.Time {
+			if len(nextSet) != 0 {
+				nextSet = append(nextSet, blocks[i])
+				res = append(res, nextSet)
+				nextSet = make([]ChainBlock, 0)
+			}
+		} else {
+			nextSet = append(nextSet, blocks[i])
+		}
+		i++
+	}
+	if len(nextSet) != 0 {
+		nextSet = append(nextSet, blocks[i])
+		res = append(res, nextSet)
+	}
+	return res
+}
+
 func (p *RandomChainParams) MakeRandomChain(t *testing.T, seed int64) (res RandomChain) {
 	r := rand.New(rand.NewSource(seed))
 
@@ -394,12 +417,6 @@ func (rc RandomChain) addInvalidExecutingMessage(execcb ChainBlock, initcb Chain
 	rc.generatedLogs[execcb] = append(rc.generatedLogs[execcb], execLog)
 }
 
-func (rc RandomChain) insertExecutingMessageAt(i uint, execcb ChainBlock, initcb ChainBlock, initiatingLog *types2.Log) {
-	execLog := ExecMsgForLog(initcb.chain, *initcb.block, initiatingLog)
-	execLog.Index = i
-	rc.generatedLogs[execcb][i] = execLog
-}
-
 func (rc RandomChain) GenerateReceiptsFromLogs() {
 	for _, cb := range rc.allBlocks {
 		chainid, block := cb.chain, cb.block
@@ -472,7 +489,7 @@ func (rc RandomChain) InvalidateBlock(candidate ChainBlock) {
 	r := rc.randomGenerator
 	switch r.Intn(3) {
 	case 0:
-		rc.InsertCycle(candidate)
+		rc.CreateCycle()
 	case 1:
 		rc.InsertSelfDependency(candidate)
 	case 2:
@@ -516,71 +533,17 @@ func (rc RandomChain) InsertSelfDependency(candidate ChainBlock) {
 	rc.generatedLogs[candidate] = append(rc.generatedLogs[candidate], initiatingLog)
 }
 
-func (rc RandomChain) listHazards(candidate ChainBlock) []ChainBlock {
-	t := rc.t
-
-	hazards := make([]ChainBlock, 0)
-	includedHazards := make(map[eth.ChainID]ChainBlock)
-
-	// Add the candidate itself as a hazard
-	stack := []ChainBlock{candidate}
-
-	for len(stack) > 0 {
-		// Pop hazard from the stack
-		hazard := stack[len(stack)-1]
-		stack = stack[:len(stack)-1]
-
-		// Check if we already found a hazard from this chain
-		includedHazard, ok := includedHazards[hazard.chain]
-		if ok {
-			// Ensure that there are not two different hazards from the same chain
-			require.Equal(t, includedHazard.block.ID(), hazard.block.ID())
-		} else {
-			// If not already included, add hazard to the list
-			hazards = append(hazards, hazard)
-			includedHazards[hazard.chain] = hazard
-
-			// For each new hazard, add all dependencies with the same timestamp to the stack
-			for _, dependency := range rc.dependencies[hazard] {
-				if dependency.block.Time == candidate.block.Time {
-					stack = append(stack, dependency)
-				}
-			}
-		}
+func (rc RandomChain) CreateCycle() {
+	sameTimeStampSets := SameTimeStampSets(rc.allBlocks[len(rc.chainIDs):])
+	if len(sameTimeStampSets) == 0 {
+		rc.t.Logf("CreateCycle: No set of blocks with the same timestamp exists. No cycle created")
+		return
 	}
-
-	return hazards
-}
-
-func (rc RandomChain) InsertCycle(candidate ChainBlock) {
-	t := rc.t
-	r := rc.randomGenerator
-
-	t.Logf("Inserting a cycle in candidate (%s, %2d)'s hazard set", candidate.chain, candidate.block.Number)
-
-	candidateHazards := rc.listHazards(candidate)
-	t.Logf("Size of (%s, %2d)'s hazard set: %d", candidate.chain, candidate.block.Number, len(candidateHazards))
-	cycleStart := candidateHazards[r.Intn(len(candidateHazards))]
-	t.Logf("Picked random hazard set element to start the cycle: (%s, %2d)", cycleStart.chain, cycleStart.block.Number)
-
-	// If the random element is equal to the candidate, no need to compute the hazards again
-	var subHazards []ChainBlock
-	if cycleStart.chain == candidate.chain {
-		require.Equal(t, cycleStart.block.Number, candidate.block.Number)
-		subHazards = candidateHazards
-	} else {
-		subHazards = rc.listHazards(cycleStart)
-		t.Logf("Size of (%s, %2d)'s hazard set: %d", cycleStart.chain, cycleStart.block.Number, len(subHazards))
+	i := rc.randomGenerator.Intn(len(sameTimeStampSets))
+	set := sameTimeStampSets[i]
+	for i, cb := range set {
+		initiatingLog := rc.addRandomLogChainBlock(cb)
+		execcb := set[(i+1)%len(set)]
+		rc.addExecutingMessageWithDependency(execcb, cb, initiatingLog)
 	}
-
-	cycleEnd := subHazards[r.Intn(len(subHazards))]
-	t.Logf("Picked random hazard set element to end the cycle: (%s, %2d)", cycleEnd.chain, cycleEnd.block.Number)
-
-	// Add executing message from first log of cycleEnd to last log of cycleStart
-	lastIndex := len(rc.generatedLogs[cycleStart]) - 1
-	initiatingLog := rc.generatedLogs[cycleStart][lastIndex]
-	// Replace dummy message at index 0
-	rc.insertExecutingMessageAt(0, cycleEnd, cycleStart, initiatingLog)
-	rc.dependencies[cycleEnd] = append(rc.dependencies[cycleEnd], cycleStart)
-	t.Logf("Added cyclic dependency: (%s, %2d) -> (%s, %2d)", cycleEnd.chain, cycleEnd.block.Number, cycleStart.chain, cycleStart.block.Number)
 }
