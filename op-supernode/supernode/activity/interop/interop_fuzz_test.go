@@ -4,9 +4,11 @@ import (
 	"context"
 	"testing"
 
+	gethlog "github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum-optimism/optimism/op-service/eth"
 	cc "github.com/ethereum-optimism/optimism/op-supernode/supernode/chain_container"
 	"github.com/stretchr/testify/require"
+	"maps"
 )
 
 func FuzzVerifyInteropMessages(f *testing.F) {
@@ -47,8 +49,12 @@ func FuzzVerifyInteropMessages(f *testing.F) {
 
 		result, err := interop.verifyInteropMessages(safeTimestamp, blocksAtTimestamp)
 		if !randomChain.isInvalid {
-			t.Logf("timestamp: %d", safeTimestamp)
 			require.NoError(t, err)
+			for chain, block := range result.L2Heads {
+				rcBlocks := randomChain.chainBlocks[chain]
+				lastBlock := rcBlocks[len(rcBlocks)-1]
+				require.Equal(t, block.Hash, lastBlock.Hash)
+			}
 		}
 
 		// P1: Valid messages never produce InvalidHeads
@@ -118,6 +124,13 @@ func (h *interopFuzzHarness) SkipBuild() *interopFuzzHarness {
 	return h
 }
 
+type testWriter struct{ t *testing.T }
+
+func (tw testWriter) Write(p []byte) (n int, err error) {
+	tw.t.Logf("%s", string(p))
+	return len(p), nil
+}
+
 // Build creates the Interop instance from configured mocks.
 // Sets up context and registers cleanup.
 func (h *interopFuzzHarness) Build() *interopFuzzHarness {
@@ -132,7 +145,8 @@ func (h *interopFuzzHarness) Build() *interopFuzzHarness {
 	}
 
 	h.mocks = h.randomChain.GetContainers()
-	h.interop = New(testLogger(), h.activationTime, h.mocks, h.dataDir)
+	logger := gethlog.NewLogger(gethlog.NewTerminalHandler(testWriter{h.t}, true))
+	h.interop = New(logger, h.activationTime, h.mocks, h.dataDir)
 	if h.interop != nil {
 		h.interop.ctx = context.Background()
 		h.t.Cleanup(func() { _ = h.interop.Stop(context.Background()) })
@@ -143,9 +157,7 @@ func (h *interopFuzzHarness) Build() *interopFuzzHarness {
 // Chains returns the map of chain containers for use with New().
 func (h *interopFuzzHarness) Chains() map[eth.ChainID]cc.ChainContainer {
 	chains := make(map[eth.ChainID]cc.ChainContainer)
-	for id, mock := range h.mocks {
-		chains[id] = mock
-	}
+	maps.Copy(chains, h.mocks)
 	return chains
 }
 
