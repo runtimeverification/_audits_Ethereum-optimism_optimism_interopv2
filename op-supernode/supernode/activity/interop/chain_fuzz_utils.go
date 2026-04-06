@@ -12,6 +12,7 @@ import (
 	params2 "github.com/ethereum/go-ethereum/params"
 	"github.com/ethereum/go-ethereum"
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/stretchr/testify/require"
 	"github.com/ethereum-optimism/optimism/op-service/testutils"
 	"github.com/ethereum-optimism/optimism/op-supernode/supernode/activity"
@@ -19,7 +20,9 @@ import (
 	"github.com/ethereum-optimism/optimism/op-supervisor/supervisor/types"
 )
 
-func ExecMsgForLog(chain eth.ChainID, block eth.L2BlockRef, log *types2.Log) *types2.Log {
+func (rc RandomChain) ExecMsgForLog(chain eth.ChainID, block eth.L2BlockRef, log *types2.Log) *types2.Log {
+	payloadHash := crypto.Keccak256Hash(types.LogToMessagePayload(log))
+
 	msg := types.Message{
 		Identifier: types.Identifier{
 			Origin:      log.Address,
@@ -28,7 +31,7 @@ func ExecMsgForLog(chain eth.ChainID, block eth.L2BlockRef, log *types2.Log) *ty
 			Timestamp:   block.Time,
 			ChainID:     chain,
 		},
-		PayloadHash: processors.LogToLogHash(log),
+		PayloadHash: payloadHash,
 	}
 	topics, data := msg.EncodeEvent()
 	return &types2.Log{
@@ -121,7 +124,13 @@ func (c RandomChainContainer) VerifiedAt(ctx context.Context, ts uint64) (l2, l1
 
 func (c RandomChainContainer) OptimisticAt(ctx context.Context, ts uint64) (l2, l1 eth.BlockID, err error) {
 	//TODO
-	return eth.BlockID{}, eth.BlockID{}, nil
+	block, err := c.LocalSafeBlockAtTimestamp(ctx, ts)
+	if err != nil {
+		return eth.BlockID{}, eth.BlockID{}, err
+	}
+	cb := ChainBlock{c.chainID, &block}
+	l1 = c.randomChain.l1SourceMap[cb].ID()
+	return block.ID(), l1, nil
 }
 
 func (c RandomChainContainer) OutputRootAtL2BlockNumber(ctx context.Context, l2BlockNum uint64) (eth.Bytes32, error) {
@@ -293,6 +302,7 @@ func (p *RandomChainParams) MakeRandomChain(t *testing.T, seed int64) (res Rando
 		res.chainBlocks[chain] = make([]*eth.L2BlockRef, 0)
 		res.blockTimes[chain] = randomInRange(r, 1, p.maxBlockTimeExclusive)
 		res.chainIDs = append(res.chainIDs, chain)
+		res.receipts[chain] = make(map[eth.BlockID]types2.Receipts)
 	}
 
 	//
@@ -301,11 +311,9 @@ func (p *RandomChainParams) MakeRandomChain(t *testing.T, seed int64) (res Rando
 
 	// First, guarantee that each chain contains at least one block
 	for _, chain := range res.chainIDs {
-		block := testutils.RandomL2BlockRef(r)
-		block.Number = 0
-		block.Time = 0
+		block := eth.L2BlockRef{}
+		block.Hash = testutils.RandomHash(r)
 		res.chainBlocks[chain] = append(res.chainBlocks[chain], &block)
-		res.addRandomLog(chain, &block)
 	}
 
 	// Then, generate the rest of the blocks.
@@ -317,11 +325,14 @@ func (p *RandomChainParams) MakeRandomChain(t *testing.T, seed int64) (res Rando
 		lastBlock := res.chainBlocks[nextChain][len(res.chainBlocks[nextChain])-1]
 		block := testutils.NextRandomL2Ref(r, uint64(res.blockTimes[nextChain]), *lastBlock, eth.BlockID{})
 		res.chainBlocks[nextChain] = append(res.chainBlocks[nextChain], &block)
-		res.addRandomLog(nextChain, &block)
+		res.addRandomLog(ChainBlock{nextChain, &block})
 	}
 
 	// Populate res.allBlocks
 	res.allBlocks = MergeBlocks(res.chainBlocks)
+	for i, cb := range res.allBlocks {
+		res.cbIndices[cb.block] = i
+	}
 
 	//
 	// Create random dependencies between all blocks
@@ -335,14 +346,15 @@ func (p *RandomChainParams) MakeRandomChain(t *testing.T, seed int64) (res Rando
 		for r.Intn(100) < p.dependencyChance {
 			execIndex := randomInRange(r, initIndex, totalLength)
 			execcb := res.allBlocks[execIndex]
-			initiatingLog := res.addRandomLogChainBlock(initcb)
+			initiatingLog := res.addRandomLog(initcb)
 			res.addExecutingMessageWithDependency(execcb, initcb, initiatingLog)
 		}
 	}
 
 	if r.Intn(100) < p.invalidateChance {
 		res.isInvalid = true
-		index := r.Intn(len(res.allBlocks)-2)
+		initIndex := len(res.chainIDs)
+		index := randomInRange(res.randomGenerator, initIndex, len(res.allBlocks)-1)
 		blockToInvalidate := res.allBlocks[index]
 		cbIndex := res.cbIndices[blockToInvalidate.block]
 		t.Logf("Randomly selected block index: %d", index)
@@ -367,6 +379,8 @@ func (p *RandomChainParams) MakeRandomChain(t *testing.T, seed int64) (res Rando
 		taken += take
 	}
 
+	res.GenerateReceiptsFromLogs()
+
 	return res
 }
 
@@ -386,14 +400,7 @@ func TestMakeRandomChain(t *testing.T) {
 	})
 }
 
-func (rc RandomChain) addRandomLog(chain eth.ChainID, block *eth.L2BlockRef) *types2.Log {
-	return rc.addRandomLogChainBlock(ChainBlock{
-		chain: chain,
-		block: block,
-	})
-}
-
-func (rc RandomChain) addRandomLogChainBlock(initcb ChainBlock) *types2.Log {
+func (rc RandomChain) addRandomLog(initcb ChainBlock) *types2.Log {
 	initiatingLog := testutils.RandomLog(rc.randomGenerator)
 	initiatingLog.Index = uint(len(rc.generatedLogs[initcb]))
 	rc.generatedLogs[initcb] = append(rc.generatedLogs[initcb], initiatingLog)
@@ -401,7 +408,7 @@ func (rc RandomChain) addRandomLogChainBlock(initcb ChainBlock) *types2.Log {
 }
 
 func (rc RandomChain) addExecutingMessage(execcb ChainBlock, initcb ChainBlock, initiatingLog *types2.Log) {
-	execLog := ExecMsgForLog(initcb.chain, *initcb.block, initiatingLog)
+	execLog := rc.ExecMsgForLog(initcb.chain, *initcb.block, initiatingLog)
 	execLog.Index = uint(len(rc.generatedLogs[execcb]))
 	rc.generatedLogs[execcb] = append(rc.generatedLogs[execcb], execLog)
 }
@@ -487,7 +494,7 @@ func (rc RandomChain) InsertMessageWithInvalidIdentifier(candidateIndex int) {
 
 func (rc RandomChain) InvalidateBlock(candidate ChainBlock) {
 	r := rc.randomGenerator
-	switch r.Intn(3) {
+	switch r.Intn(2) {
 	case 0:
 		rc.CreateCycle()
 	case 1:
@@ -515,7 +522,7 @@ func (rc RandomChain) InsertFutureDependency(candidateIndex int) {
 	// Randomly pick a future block and create an executing message to it
 	futureIndex := randomInRange(r, i, len(rc.allBlocks))
 	futureBlock := rc.allBlocks[futureIndex]
-	initiatingLog := rc.addRandomLogChainBlock(futureBlock)
+	initiatingLog := rc.addRandomLog(futureBlock)
 	rc.addExecutingMessageWithDependency(candidateBlock, futureBlock, initiatingLog)
 }
 
@@ -542,7 +549,7 @@ func (rc RandomChain) CreateCycle() {
 	i := rc.randomGenerator.Intn(len(sameTimeStampSets))
 	set := sameTimeStampSets[i]
 	for i, cb := range set {
-		initiatingLog := rc.addRandomLogChainBlock(cb)
+		initiatingLog := rc.addRandomLog(cb)
 		execcb := set[(i+1)%len(set)]
 		rc.addExecutingMessageWithDependency(execcb, cb, initiatingLog)
 	}
