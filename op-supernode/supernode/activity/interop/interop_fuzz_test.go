@@ -48,6 +48,7 @@ func FuzzVerifyInteropMessages(f *testing.F) {
 		require.NoError(t, err)
 
 		result, err := interop.verifyInteropMessages(safeTimestamp, blocksAtTimestamp)
+
 		if !randomChain.isInvalid {
 			require.NoError(t, err)
 			for chain, block := range result.L2Heads {
@@ -55,13 +56,13 @@ func FuzzVerifyInteropMessages(f *testing.F) {
 				lastBlock := rcBlocks[len(rcBlocks)-1]
 				require.Equal(t, block.Hash, lastBlock.Hash)
 			}
+
+			// P1: Valid messages never produce InvalidHeads
+			require.True(t, result.IsValid(), "P1: valid messages should produce valid result, got InvalidHeads: %v", result.InvalidHeads)
+
+			// P3: IsValid() ↔ len(InvalidHeads) == 0
+			require.Empty(t, result.InvalidHeads, "P3: InvalidHeads should be empty for valid result")
 		}
-
-		// P1: Valid messages never produce InvalidHeads
-		require.True(t, result.IsValid(), "P1: valid messages should produce valid result, got InvalidHeads: %v", result.InvalidHeads)
-
-		// P3: IsValid() ↔ len(InvalidHeads) == 0
-		require.Empty(t, result.InvalidHeads, "P3: InvalidHeads should be empty for valid result")
 	})
 }
 

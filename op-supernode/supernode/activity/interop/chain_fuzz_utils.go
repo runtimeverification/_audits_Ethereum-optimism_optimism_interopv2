@@ -16,7 +16,6 @@ import (
 	"github.com/stretchr/testify/require"
 	"github.com/ethereum-optimism/optimism/op-service/testutils"
 	"github.com/ethereum-optimism/optimism/op-supernode/supernode/activity"
-	"github.com/ethereum-optimism/optimism/op-supervisor/supervisor/backend/processors"
 	"github.com/ethereum-optimism/optimism/op-supervisor/supervisor/types"
 )
 
@@ -353,14 +352,7 @@ func (p *RandomChainParams) MakeRandomChain(t *testing.T, seed int64) (res Rando
 
 	if r.Intn(100) < p.invalidateChance {
 		res.isInvalid = true
-		initIndex := len(res.chainIDs)
-		index := randomInRange(res.randomGenerator, initIndex, len(res.allBlocks)-1)
-		blockToInvalidate := res.allBlocks[index]
-		cbIndex := res.cbIndices[blockToInvalidate.block]
-		t.Logf("Randomly selected block index: %d", index)
-		t.Logf("cbIndex: %d", cbIndex)
-
-		res.InvalidateBlock(blockToInvalidate)
+		res.Invalidate()
 	}
 
 	//
@@ -441,6 +433,8 @@ func randomInRange(r *rand.Rand, lowerIncluding int, upperExcluding int) int {
 }
 
 func (rc RandomChain) InvalidExecMsgForLog(chain eth.ChainID, block eth.L2BlockRef, log *types2.Log) *types2.Log {
+	payloadHash := crypto.Keccak256Hash(types.LogToMessagePayload(log))
+
 	r := rc.randomGenerator
 	msg := types.Message{
 		Identifier: types.Identifier{
@@ -450,7 +444,7 @@ func (rc RandomChain) InvalidExecMsgForLog(chain eth.ChainID, block eth.L2BlockR
 			Timestamp:   block.Time,
 			ChainID:     chain,
 		},
-		PayloadHash: processors.LogToLogHash(log),
+		PayloadHash: payloadHash,
 	}
 
 	switch r.Intn(5) {
@@ -481,10 +475,11 @@ func (rc RandomChain) InvalidExecMsgForLog(chain eth.ChainID, block eth.L2BlockR
 	}
 }
 
-func (rc RandomChain) InsertMessageWithInvalidIdentifier(candidateIndex int) {
+func (rc RandomChain) InsertMessageWithInvalidIdentifier() {
 	r := rc.randomGenerator
+	candidateIndex := randomInRange(r, len(rc.chainIDs), len(rc.allBlocks))
+	randomIndex := randomInRange(r, len(rc.chainIDs), len(rc.allBlocks))
 	candidateBlock := rc.allBlocks[candidateIndex]
-	randomIndex := r.Intn(candidateIndex + 1)
 	randomBlock := rc.allBlocks[randomIndex]
 	randomLogIndex := r.Intn(len(rc.generatedLogs[randomBlock]))
 	randomLog := rc.generatedLogs[randomBlock][randomLogIndex]
@@ -492,24 +487,30 @@ func (rc RandomChain) InsertMessageWithInvalidIdentifier(candidateIndex int) {
 	rc.addInvalidExecutingMessage(candidateBlock, randomBlock, randomLog)
 }
 
-func (rc RandomChain) InvalidateBlock(candidate ChainBlock) {
+func (rc RandomChain) Invalidate() {
 	r := rc.randomGenerator
-	switch r.Intn(2) {
+	switch r.Intn(4) {
 	case 0:
 		rc.CreateCycle()
 	case 1:
-		rc.InsertSelfDependency(candidate)
+		rc.InsertSelfDependency()
 	case 2:
-		rc.InsertMessageWithInvalidIdentifier(rc.cbIndices[candidate.block])
+		rc.InsertMessageWithInvalidIdentifier()
 	case 3:
-		rc.InsertFutureDependency(rc.cbIndices[candidate.block])
+		rc.InsertFutureDependency()
 	default:
 	}
 }
 
-func (rc RandomChain) InsertFutureDependency(candidateIndex int) {
+func (rc RandomChain) InsertFutureDependency() {
 	t := rc.t
 	r := rc.randomGenerator
+	latestPossibleIndex := 0
+	latestTimestamp := rc.allBlocks[len(rc.allBlocks)-1].block.Time
+	for i := len(rc.allBlocks)-1; rc.allBlocks[i].block.Time == latestTimestamp; i-- {
+		latestPossibleIndex = i
+	}
+	candidateIndex := randomInRange(r, len(rc.chainIDs), latestPossibleIndex)
 	candidateBlock := rc.allBlocks[candidateIndex]
 	t.Logf("Inserting a future dependency in candidate (%s, %2d)'s hazard set", candidateBlock.chain, candidateBlock.block.Number)
 
@@ -526,8 +527,10 @@ func (rc RandomChain) InsertFutureDependency(candidateIndex int) {
 	rc.addExecutingMessageWithDependency(candidateBlock, futureBlock, initiatingLog)
 }
 
-func (rc RandomChain) InsertSelfDependency(candidate ChainBlock) {
+func (rc RandomChain) InsertSelfDependency() {
 	r := rc.randomGenerator
+	candidateIndex := randomInRange(r, len(rc.chainIDs), len(rc.allBlocks))
+	candidate := rc.allBlocks[candidateIndex]
 
 	// Create a random initiating message to be inserted at index N+1
 	initiatingLog := testutils.RandomLog(r)
