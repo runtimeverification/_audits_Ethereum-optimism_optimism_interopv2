@@ -101,10 +101,30 @@ class Supernode {
         }
     }
 
+    // applyRewindPlan: stub body (always reports failure).
+    //
+    // SPEC.md T3 specifies the real rewind behavior (prune VerifiedDB tail,
+    // prune DenyList entries with DecisionTimestamp >= target, prune LogsDB
+    // tails for diverging chains). Until the class tracks LogsDB / DenyList
+    // (Step 2c), this stub is a no-op that returns false, causing the
+    // caller (applyPendingTransition) to preserve the pending Rewind and
+    // retry on the next round. This is semantically consistent with the
+    // "partial progress / retry" contract.
+    //
+    // Removing the {:axiom} tags: both ensures clauses are now proven by
+    // the trivial body. The method does not reassign `this.verifiedDB`, so
+    // the field reference equality holds; the VerifiedDB object is not
+    // mutated, so Dafny frame analysis preserves `verifiedDB.Invariants()`
+    // given the new `requires` precondition.
     method applyRewindPlan(plan : RewindPlan) returns (success : bool)
+        requires verifiedDB.Invariants()
         modifies this, verifiedDB
-        ensures{:axiom} verifiedDB == old(verifiedDB)
-        ensures{:axiom} verifiedDB.Invariants()
+        ensures verifiedDB == old(verifiedDB)
+        ensures verifiedDB.Invariants()
+        ensures success == false
+    {
+        success := false;
+    }
 
     method invalidateBlock(chainID : ChainID, blockID : BlockID, decisionTimestamp : uint64) returns (success : bool)
 
@@ -185,8 +205,18 @@ class Supernode {
         }
     }
 
+    // sameL1Chain: stub body (always returns None).
+    //
+    // The real implementation queries the L1 client for ancestry between
+    // `heads` and `lastVerified`. Deferred to the L1 client integration.
+    // The stub returns None, which the caller (observeRound) converts to
+    // returning None itself. The previous {:axiom} ensures clause becomes
+    // vacuously true because `same == None`.
     method sameL1Chain(heads : seq<BlockID>, lastVerified : Option<BlockID>) returns (same : Option<ChainConsistencyResult>)
-        ensures{:axiom} (same != None && same.value == ChainConsistencyResult.InconsistentVerifiedL1) ==> verifiedDB.LastTimestamp() != None
+        ensures (same != None && same.value == ChainConsistencyResult.InconsistentVerifiedL1) ==> verifiedDB.LastTimestamp() != None
+    {
+        same := None;
+    }
     
     method checkChainsReady(ts : uint64) returns (ready : Option<ChainsReadyResult>)
 
@@ -206,9 +236,19 @@ class Supernode {
         return Some(invalidMsgs + cycleMsgs);
     }
 
+    // resolveFrontierVerificationView: stub body (always returns None).
+    //
+    // The real implementation queries each VirtualNode for the frontier
+    // block references and their executing messages. Deferred to the
+    // VirtualNode integration. The stub returns None, which the caller
+    // (`verify`) converts to returning None. Both previous {:axiom} ensures
+    // clauses become vacuously true because `view == None`.
     method resolveFrontierVerificationView(blocksAtTS : map<ChainID, BlockID>) returns (view : Option<map<ChainID, FrontierBlockView>>)
-        ensures{:axiom} view != None ==> forall k :: k in blocksAtTS.Keys <==> k in view.value.Keys
-        ensures{:axiom} view != None ==> forall k :: k in blocksAtTS.Keys ==> view.value[k].Ref.ID == blocksAtTS[k]
+        ensures view != None ==> forall k :: k in blocksAtTS.Keys <==> k in view.value.Keys
+        ensures view != None ==> forall k :: k in blocksAtTS.Keys ==> view.value[k].Ref.ID == blocksAtTS[k]
+    {
+        view := None;
+    }
     
     method verifyInteropMessages(ts : uint64, frontierView : map<ChainID, FrontierBlockView>) returns (invalidated : map<ChainID, BlockID>)
     {

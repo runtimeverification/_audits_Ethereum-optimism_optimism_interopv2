@@ -89,6 +89,33 @@ datatype ExecutingMessage = ExecutingMessage(
 	Timestamp : uint64
 )
 
+// BlockWithLogs is a LogsDB entry: a block paired with its executing messages.
+// Used by SupernodeState.dfy to model L_j = [(B^j_0, l^j_0), ...].
+// See invariants/SPEC.md §0 (Notation) and I1.
+datatype BlockWithLogs = BlockWithLogs(
+    Ref : BlockRef,
+    ExecMsgs : seq<ExecutingMessage>
+)
+
+// DenyListEntry is a block that was invalidated during cross-validation,
+// tagged with the timestamp at which the invalidation decision was made.
+// The decision timestamp is required by invariants/SPEC.md §I11.
+datatype DenyListEntry = DenyListEntry(
+    Block : BlockID,
+    DecisionTimestamp : uint64
+)
+
+// IsParentOf captures the linear-chain relationship used by I2, I6, T5.
+// A block `child` is the immediate successor of `parent` iff its ParentHash
+// points to `parent.ID.Hash` and its number is parent.Number + 1.
+// The `as int` cast promotes to mathematical integers so `+ 1` has no
+// overflow side-condition.
+predicate IsParentOf(parent : BlockRef, child : BlockRef)
+{
+    child.ParentHash == parent.ID.Hash &&
+    (child.ID.Number as int) == (parent.ID.Number as int) + 1
+}
+
 datatype FrontierBlockView = FrontierBlockView(
     Ref : BlockRef,
     ExecMsgs : seq<ExecutingMessage>

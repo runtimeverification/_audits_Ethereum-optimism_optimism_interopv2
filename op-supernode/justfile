@@ -25,4 +25,36 @@ coverage:
     @go tool cover -func=coverage.out | grep '^total:'
     @go tool cover -func=coverage.out | grep -v '^total:'
 
+# Verify Dafny models. See dafny-models/ and invariants/SPEC.md.
+# Requires a local Dafny install (brew install dafny).
+verify-dafny:
+    @command -v dafny >/dev/null 2>&1 || { echo "dafny not installed — see https://dafny.org/"; exit 1; }
+    dafny verify --verification-time-limit 300 dafny-models/Types.dfy dafny-models/SupernodeState.dfy dafny-models/VerifiedDB.dfy dafny-models/Supernode.dfy dafny-models/SupernodeView.dfy
+
+# Run the Go invariants package tests. Mirrors the Dafny models; see SPEC.md.
+verify-invariants-go:
+    go test ./invariants/...
+
+# Run the Go invariants tests with runtime assertions enabled (supernode_invariants tag).
+verify-invariants-go-tagged:
+    go test -tags=supernode_invariants ./invariants/...
+
+# Run the state-machine fuzzers against the reference model. go test
+# only accepts one -fuzz target per invocation, so the single-chain and
+# multi-chain fuzzers run sequentially. Increase per-target duration
+# with FUZZTIME=5m just fuzz-invariants.
+FUZZTIME := env_var_or_default("FUZZTIME", "30s")
+fuzz-invariants:
+    go test -run=^$ -fuzz=^FuzzReferenceModel$ -fuzztime={{FUZZTIME}} ./invariants/
+    go test -run=^$ -fuzz=^FuzzReferenceModelMultiChain$ -fuzztime={{FUZZTIME}} ./invariants/
+
+# Run every layer: Dafny proofs + Go invariant tests (untagged + tagged) + fuzz.
+# Single gate for CI.
+verify-invariants: verify-dafny verify-invariants-go verify-invariants-go-tagged fuzz-invariants
+
+# Regenerate the canonical trace corpus under invariants/testdata/traces/.
+# Run after changing the reference model transitions.
+regen-traces:
+    go test -run=TestRegenCanonicalTraces ./invariants/... -args -regen-traces
+
 
