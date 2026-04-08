@@ -62,6 +62,8 @@ func FuzzVerifyInteropMessages(f *testing.F) {
 
 			// P3: IsValid() ↔ len(InvalidHeads) == 0
 			require.Empty(t, result.InvalidHeads, "P3: InvalidHeads should be empty for valid result")
+		} else if randomChain.invalidInfo != nil {
+			randomChain.invalidInfo.TestResult(result)
 		}
 	})
 }
