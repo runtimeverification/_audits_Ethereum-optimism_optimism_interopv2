@@ -2,22 +2,22 @@ package interop
 
 import (
 	"context"
-	"math/rand"
 	"math/big"
+	"math/rand"
 	"testing"
 
 	"github.com/ethereum-optimism/optimism/op-service/eth"
-	cc "github.com/ethereum-optimism/optimism/op-supernode/supernode/chain_container"
-	types2 "github.com/ethereum/go-ethereum/core/types"
-	params2 "github.com/ethereum/go-ethereum/params"
-	"github.com/ethereum/go-ethereum"
-	"github.com/ethereum/go-ethereum/common"
-	"github.com/ethereum/go-ethereum/crypto"
-	"github.com/stretchr/testify/require"
 	"github.com/ethereum-optimism/optimism/op-service/testutils"
 	"github.com/ethereum-optimism/optimism/op-supernode/supernode/activity"
+	cc "github.com/ethereum-optimism/optimism/op-supernode/supernode/chain_container"
 	"github.com/ethereum-optimism/optimism/op-supervisor/supervisor/backend/processors"
 	"github.com/ethereum-optimism/optimism/op-supervisor/supervisor/types"
+	"github.com/ethereum/go-ethereum"
+	"github.com/ethereum/go-ethereum/common"
+	types2 "github.com/ethereum/go-ethereum/core/types"
+	"github.com/ethereum/go-ethereum/crypto"
+	params2 "github.com/ethereum/go-ethereum/params"
+	"github.com/stretchr/testify/require"
 )
 
 func (rc RandomChain) ExecMsgForLog(chain eth.ChainID, block eth.L2BlockRef, log *types2.Log) *types2.Log {
@@ -55,8 +55,8 @@ type RandomChainParams struct {
 
 	maxBlockTimeExclusive int
 
-	invalidateChance       int // Percentage [0-100]
-	dependencyChance       int // Percentage [0-100]
+	invalidateChance int // Percentage [0-100]
+	dependencyChance int // Percentage [0-100]
 }
 
 type L1Assignments struct {
@@ -65,26 +65,26 @@ type L1Assignments struct {
 }
 
 type RandomChain struct {
-	t             *testing.T
+	t               *testing.T
 	randomGenerator *rand.Rand
-	chainIDs      []eth.ChainID
-	allBlocks     []ChainBlock
-	cbIndices     map[*eth.L2BlockRef]int // Lookup for a ChainBlock's index in allBlocks
-	generatedLogs map[ChainBlock][]*types2.Log
-	dependencies  map[ChainBlock][]ChainBlock
-	chainBlocks   map[eth.ChainID][]*eth.L2BlockRef
-	l1SourceMap   map[ChainBlock]eth.BlockRef
-	l1Source      map[uint64]eth.BlockRef
-	receipts      map[eth.ChainID]map[eth.BlockID]types2.Receipts
-	blockTimes    map[eth.ChainID]int
-	isInvalid     bool
+	chainIDs        []eth.ChainID
+	allBlocks       []ChainBlock
+	cbIndices       map[*eth.L2BlockRef]int // Lookup for a ChainBlock's index in allBlocks
+	generatedLogs   map[ChainBlock][]*types2.Log
+	dependencies    map[ChainBlock][]ChainBlock
+	chainBlocks     map[eth.ChainID][]*eth.L2BlockRef
+	l1SourceMap     map[ChainBlock]eth.BlockRef
+	l1Source        map[uint64]eth.BlockRef
+	receipts        map[eth.ChainID]map[eth.BlockID]types2.Receipts
+	blockTimes      map[eth.ChainID]int
+	isInvalid       bool
 }
 
 var _ cc.ChainContainer = RandomChainContainer{}
 
 type RandomChainContainer struct {
-	chainID            eth.ChainID
-	randomChain        *RandomChain
+	chainID     eth.ChainID
+	randomChain *RandomChain
 }
 
 func (c RandomChainContainer) ID() eth.ChainID                                  { return c.chainID }
@@ -95,16 +95,16 @@ func (c RandomChainContainer) Resume(ctx context.Context) error                 
 func (c RandomChainContainer) RegisterVerifier(v activity.VerificationActivity) {}
 
 func (c RandomChainContainer) LocalSafeBlockAtTimestamp(ctx context.Context, ts uint64) (eth.L2BlockRef, error) {
-	var theblock *eth.L2BlockRef = nil;
+	var theblock *eth.L2BlockRef = nil
 	for _, block := range c.randomChain.chainBlocks[c.chainID] {
 		if block.Time <= ts {
-			theblock = block;
+			theblock = block
 		} else {
 			break
 		}
 	}
 	if theblock == nil {
-		return eth.L2BlockRef{}, ethereum.NotFound;
+		return eth.L2BlockRef{}, ethereum.NotFound
 	}
 	return *theblock, nil
 }
@@ -149,15 +149,15 @@ func (c RandomChainContainer) RewindEngine(ctx context.Context, timestamp uint64
 }
 
 func (c RandomChainContainer) FetchReceipts(ctx context.Context, blockHash eth.BlockID) (eth.BlockInfo, types2.Receipts, error) {
-	chainReceipts := c.randomChain.receipts[c.chainID];
-	receipt := chainReceipts[blockHash];
+	chainReceipts := c.randomChain.receipts[c.chainID]
+	receipt := chainReceipts[blockHash]
 
 	for _, block := range c.randomChain.chainBlocks[c.chainID] {
 		if block.ID() == blockHash {
 			header := &types2.Header{
-				  ParentHash: block.ParentHash,
-				  Number:     new(big.Int).SetUint64(block.Number),
-				  Time:       block.Time,
+				ParentHash: block.ParentHash,
+				Number:     new(big.Int).SetUint64(block.Number),
+				Time:       block.Time,
 			}
 			return eth.HeaderBlockInfoTrusted(block.Hash, header), receipt, nil
 		}
@@ -183,10 +183,10 @@ func (c RandomChainContainer) SetResetCallback(cb cc.ResetCallback) {
 	//TODO
 }
 
-func (rc RandomChain) GetContainers() (map[eth.ChainID]cc.ChainContainer) {
-	chains := make(map[eth.ChainID]cc.ChainContainer);
+func (rc RandomChain) GetContainers() map[eth.ChainID]cc.ChainContainer {
+	chains := make(map[eth.ChainID]cc.ChainContainer)
 	for _, chain := range rc.chainIDs {
-		container := RandomChainContainer {
+		container := RandomChainContainer{
 			chainID:     chain,
 			randomChain: &rc,
 		}
@@ -282,19 +282,19 @@ func (p *RandomChainParams) MakeRandomChain(t *testing.T, seed int64) (res Rando
 	totalLength := randomInRange(r, p.minLength, p.maxLength) + 2
 
 	res = RandomChain{
-		t:             t,
+		t:               t,
 		randomGenerator: r,
-		chainIDs:      make([]eth.ChainID, 0, p.chainCount),
-		allBlocks:     make([]ChainBlock, 0, totalLength),
-		cbIndices:     make(map[*eth.L2BlockRef]int),
-		generatedLogs: make(map[ChainBlock][]*types2.Log),
-		dependencies:  make(map[ChainBlock][]ChainBlock),
-		chainBlocks:   make(map[eth.ChainID][]*eth.L2BlockRef),
-		l1SourceMap:   make(map[ChainBlock]eth.BlockRef),
-		l1Source:      make(map[uint64]eth.BlockRef),
-		receipts:      make(map[eth.ChainID]map[eth.BlockID]types2.Receipts),
-		blockTimes:    make(map[eth.ChainID]int),
-		isInvalid:     false,
+		chainIDs:        make([]eth.ChainID, 0, p.chainCount),
+		allBlocks:       make([]ChainBlock, 0, totalLength),
+		cbIndices:       make(map[*eth.L2BlockRef]int),
+		generatedLogs:   make(map[ChainBlock][]*types2.Log),
+		dependencies:    make(map[ChainBlock][]ChainBlock),
+		chainBlocks:     make(map[eth.ChainID][]*eth.L2BlockRef),
+		l1SourceMap:     make(map[ChainBlock]eth.BlockRef),
+		l1Source:        make(map[uint64]eth.BlockRef),
+		receipts:        make(map[eth.ChainID]map[eth.BlockID]types2.Receipts),
+		blockTimes:      make(map[eth.ChainID]int),
+		isInvalid:       false,
 	}
 
 	for i := range p.chainCount {
@@ -385,12 +385,12 @@ func (p *RandomChainParams) MakeRandomChain(t *testing.T, seed int64) (res Rando
 }
 
 func TestMakeRandomChain(t *testing.T) {
-	params := RandomChainParams {
-		chainCount:             3,
-		minLength:              5,
-		maxLength:              20,
-		invalidateChance:       70,
-		dependencyChance:       8,
+	params := RandomChainParams{
+		chainCount:       3,
+		minLength:        5,
+		maxLength:        20,
+		invalidateChance: 70,
+		dependencyChance: 8,
 	}
 
 	chain := params.MakeRandomChain(t, 0)
@@ -431,7 +431,7 @@ func (rc RandomChain) GenerateReceiptsFromLogs() {
 		rcpt := types2.Receipt{
 			Logs: logs,
 		}
-		rc.receipts[chainid][block.ID()] = types2.Receipts{&rcpt};
+		rc.receipts[chainid][block.ID()] = types2.Receipts{&rcpt}
 	}
 }
 
