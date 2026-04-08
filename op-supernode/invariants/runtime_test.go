@@ -57,8 +57,17 @@ func TestAssert_OK(t *testing.T) {
 }
 
 func TestAssert_ZeroSnapshot(t *testing.T) {
-	// Zero value is the fast-path skip.
+	// An empty snapshot is a valid initial state and must not be skipped.
+	// CheckAll runs every predicate; with no chains/logs/verified/deny
+	// nothing has anything to violate, so the call must not increment
+	// failCount.
+	SetPanicOnFailure(false)
+	defer SetPanicOnFailure(true)
+	before := AssertionFailureCount()
 	Assert(Snapshot{})
+	if AssertionFailureCount() != before {
+		t.Fatalf("empty snapshot should satisfy CheckAll")
+	}
 }
 
 func TestAssertionsEnabledConst(t *testing.T) {

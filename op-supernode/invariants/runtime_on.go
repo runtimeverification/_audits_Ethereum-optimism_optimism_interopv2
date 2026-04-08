@@ -4,6 +4,7 @@ package invariants
 
 import (
 	"fmt"
+	"sync"
 	"sync/atomic"
 )
 
@@ -36,8 +37,10 @@ var (
 
 	// failureSink is an optional callback invoked on every failure. Used
 	// by tests to capture failures without panicking. Protected by
-	// failureSinkMu below because atomic.Value doesn't work for funcs.
-	failureSink func(err error)
+	// failureSinkMu because atomic.Value doesn't work for naked funcs and
+	// atomic.Pointer[func(error)] adds an indirection layer for no win.
+	failureSinkMu sync.RWMutex
+	failureSink   func(err error)
 )
 
 func init() {
@@ -53,7 +56,16 @@ func SetPanicOnFailure(panic bool) {
 // SetFailureSink installs a callback for invariant failures. Calling with
 // nil removes the sink. Thread-safe.
 func SetFailureSink(sink func(err error)) {
+	failureSinkMu.Lock()
 	failureSink = sink
+	failureSinkMu.Unlock()
+}
+
+// loadFailureSink returns the current failure sink under a read lock.
+func loadFailureSink() func(error) {
+	failureSinkMu.RLock()
+	defer failureSinkMu.RUnlock()
+	return failureSink
 }
 
 // AssertionFailureCount returns the total number of invariant violations
@@ -62,21 +74,17 @@ func AssertionFailureCount() uint64 {
 	return failCount.Load()
 }
 
-// Assert runs CheckAll on the given snapshot and reports any failure. It
-// is a no-op if the snapshot is the zero value (callers can pass the
-// empty snapshot to skip without branching).
+// Assert runs CheckAll on the given snapshot and reports any failure.
+// CheckAll on an empty snapshot is cheap (nanoseconds), so there is no
+// fast-path skip — using ActivationTS == 0 as a sentinel would mask I12
+// for any supernode whose activation timestamp is genuinely 0.
 func Assert(s Snapshot) {
-	// Fast path: zero snapshot = skip.
-	if s.ActivationTS == 0 && len(s.Chains) == 0 &&
-		len(s.LogsDB) == 0 && len(s.Verified) == 0 && len(s.DenyList) == 0 {
-		return
-	}
 	err := CheckAll(s)
 	if err == nil {
 		return
 	}
 	failCount.Add(1)
-	if sink := failureSink; sink != nil {
+	if sink := loadFailureSink(); sink != nil {
 		sink(err)
 	}
 	if panicOnFailure.Load() {

@@ -64,6 +64,8 @@ For every chain `j` and index `i`:
 
 **Class:** STRUCTURAL but expensive. Runtime assertions may downgrade to a spot check (single-message validity) and leave the full cycle check to fuzz and Dafny.
 
+**Modeling gap (LogIdx):** the current `Snapshot` schema stores only *executing* messages on each block (`BlockWithLogs.ExecMsgs`), not the full ordered log array. As a consequence, the state-local half of I3 in Go (`initiatingMessageExists`, `env.go`) can only verify `(chainID, blockNum, timestamp)` — `LogIdx` is never validated. To close this gap, `BlockWithLogs` must grow a `LogCount uint32` (cheap) or a full `Logs []Log` field (faster I1, but more memory). Tracked in §5 item 19.
+
 ### I4 — VerifiedDB anchor
 
 For every chain `j`:
@@ -322,6 +324,8 @@ Tracking items to resolve across Steps 2 / 2b / 2c of the Dafny port. Status as 
 16. **Activation timestamp is `*uint64`, VerifiedDB is inside the Interop activity.** The Step 3c adapter must: (a) dereference `sn.cfg.InteropActivationTimestamp` with a nil check (return 0 or sentinel if interop is not yet activated); (b) locate the `*interop.Interop` activity inside `sn.activities[]` via type assertion — there's no direct accessor. The activity holds both `verifiedDB` (`interop.go:82`) and the per-chain `logsDBs` map (`interop.go:83`), so one traversal yields both halves of the Snapshot. Consider adding a public `sn.InteropActivity() *interop.Interop` accessor on Supernode to avoid the type-assertion dance.
 17. **Do NOT snapshot mid-interop round.** The subagent's lock-discipline analysis flags this as a correctness requirement: the VirtualNode is recreated mid-round, LogsDB tails can be speculative, and DenyList mutations are not atomic with LogsDB mutations. `SnapshotFrom` must be called at a stable checkpoint — specifically, after a completed `applyPendingTransition` cycle. The runtime assertion hook should therefore fire from `Supernode.progressAndRecord()` AFTER `applyPendingTransition` returns, not from inside mutating methods. `invariants.AssertWith(func() Snapshot { return SnapshotFrom(bridge) })` is the canonical call site.
 18. **SuperRoot activity is NOT a source for `Verified[]`.** The subagent confirms `SuperRoot.atTimestamp` is a single-timestamp query, not a history accessor. The only path to the full `Verified[]` sequence is walking `interop.VerifiedDB.Get(ts)` from `ActivationTS` to `LastTimestamp()`. The adapter must perform that walk; cache-friendliness is a future optimization (a new `interop.VerifiedDB.Range(from, to) iter.Seq2[uint64, VerifiedResult]` would be ideal).
+
+19. **I3 `LogIdx` is not state-checkable in the current schema.** `BlockWithLogs` stores only executing messages. The state-local half of I3 in `env.go::initiatingMessageExists` therefore matches on `(chainID, blockNum, timestamp)` only and silently accepts mismatched `LogIdx`. To close this either (a) add `LogCount uint32` to `BlockWithLogs` and validate `m.LogIdx < target.LogCount`, or (b) materialize the full `Logs []Log` per block and check by content. Option (a) is sufficient and cheap.
 
 ---
 

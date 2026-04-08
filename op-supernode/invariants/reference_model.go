@@ -17,6 +17,11 @@ import (
 
 // CloneSnapshot deep-copies a Snapshot so Apply* functions do not mutate
 // their input. Exported so tests and fuzzers can make defensive copies.
+//
+// "Deep" here means: every map, slice, and slice-of-slice referenced by
+// the returned Snapshot is freshly allocated. After CloneSnapshot, the
+// caller can mutate any field of the result without aliasing the source
+// — including BlockWithLogs.ExecMsgs and VerifiedEntry.L2Heads.
 func CloneSnapshot(s Snapshot) Snapshot {
 	out := Snapshot{
 		ActivationTS: s.ActivationTS,
@@ -26,7 +31,7 @@ func CloneSnapshot(s Snapshot) Snapshot {
 		DenyList:     make(map[eth.ChainID][]DenyListEntry, len(s.DenyList)),
 	}
 	for k, v := range s.LogsDB {
-		out.LogsDB[k] = append([]BlockWithLogs{}, v...)
+		out.LogsDB[k] = cloneBlockWithLogsSlice(v)
 	}
 	for k, v := range s.DenyList {
 		out.DenyList[k] = append([]DenyListEntry{}, v...)
@@ -37,6 +42,43 @@ func CloneSnapshot(s Snapshot) Snapshot {
 			heads[kk] = vv
 		}
 		out.Verified[i] = VerifiedEntry{
+			Timestamp:   v.Timestamp,
+			L1Inclusion: v.L1Inclusion,
+			L2Heads:     heads,
+		}
+	}
+	return out
+}
+
+// cloneBlockWithLogsSlice copies a per-chain LogsDB slice, including the
+// per-block ExecMsgs slice. Used by CloneSnapshot and StaticStateView.
+func cloneBlockWithLogsSlice(in []BlockWithLogs) []BlockWithLogs {
+	if in == nil {
+		return nil
+	}
+	out := make([]BlockWithLogs, len(in))
+	for i, b := range in {
+		out[i] = BlockWithLogs{
+			Ref:      b.Ref,
+			ExecMsgs: append([]ExecutingMessage{}, b.ExecMsgs...),
+		}
+	}
+	return out
+}
+
+// cloneVerifiedSlice copies a Verified slice including each entry's
+// L2Heads map. Used by StaticStateView.
+func cloneVerifiedSlice(in []VerifiedEntry) []VerifiedEntry {
+	if in == nil {
+		return nil
+	}
+	out := make([]VerifiedEntry, len(in))
+	for i, v := range in {
+		heads := make(map[eth.ChainID]eth.BlockID, len(v.L2Heads))
+		for k, vv := range v.L2Heads {
+			heads[k] = vv
+		}
+		out[i] = VerifiedEntry{
 			Timestamp:   v.Timestamp,
 			L1Inclusion: v.L1Inclusion,
 			L2Heads:     heads,
@@ -155,10 +197,24 @@ func ApplyInvalidate(
 
 	out := CloneSnapshot(s)
 	for chain, blockID := range invalidHeads {
-		out.DenyList[chain] = append(out.DenyList[chain], DenyListEntry{
+		entry := DenyListEntry{
 			Block:             blockID,
 			DecisionTimestamp: t + 1,
-		})
+		}
+		// T4 should be idempotent: invalidating the same block twice in
+		// the same round must not double-record it. Skip if an entry with
+		// the same (Block, DecisionTimestamp) is already present.
+		dup := false
+		for _, existing := range out.DenyList[chain] {
+			if existing == entry {
+				dup = true
+				break
+			}
+		}
+		if dup {
+			continue
+		}
+		out.DenyList[chain] = append(out.DenyList[chain], entry)
 	}
 	return out, nil
 }

@@ -59,6 +59,7 @@ func CheckAllWithEnv(s Snapshot, env Env) error {
 		errs = append(errs,
 			CheckI1_LogsBelongToBlocks(s, env),
 			CheckI3_ExecutingMessageValidity(s, env),
+			CheckI7_NoHigherL2Block(s, env),
 			CheckI8_VerifiedL1Linear(s, env),
 			CheckI9_MinimalL1Cover(s, env),
 		)
@@ -145,9 +146,12 @@ func initiatingMessageExists(s Snapshot, m ExecutingMessage) bool {
 	return false
 }
 
-// findExecMsgCycle runs a depth-first cycle detector over the static
-// executing-message dependency graph. Returns the first offending node if
-// any cycle is found. Nodes are identified by (chain, blockNum).
+// findExecMsgCycle runs an iterative DFS cycle detector over the static
+// executing-message dependency graph. Iterative (rather than recursive)
+// so a deep graph cannot blow the goroutine stack and panic the
+// supernode under runtime assertions. Returns the first node observed on
+// a back-edge if any cycle is found. Nodes are identified by
+// (chain, blockNum).
 func findExecMsgCycle(s Snapshot) (eth.ChainID, uint64, bool) {
 	type node struct {
 		chain eth.ChainID
@@ -160,65 +164,98 @@ func findExecMsgCycle(s Snapshot) (eth.ChainID, uint64, bool) {
 	)
 	color := make(map[node]int)
 
-	// Build an adjacency list on the fly from Snapshot.
-	neighbors := func(n node) []node {
-		logs, ok := s.LogsDB[n.chain]
-		if !ok {
-			return nil
-		}
-		var found *BlockWithLogs
-		for i := range logs {
-			if logs[i].Ref.ID.Number == n.num {
-				found = &logs[i]
-				break
+	// Build the adjacency list once. The lookup-by-number scan inside the
+	// per-call neighbors closure was O(n) per visit; this materializes it
+	// as O(total blocks) once.
+	adj := make(map[node][]node)
+	for chain, logs := range s.LogsDB {
+		for _, b := range logs {
+			n := node{chain: chain, num: b.Ref.ID.Number}
+			out := make([]node, 0, len(b.ExecMsgs))
+			for _, m := range b.ExecMsgs {
+				out = append(out, node{chain: m.ChainID, num: m.BlockNum})
 			}
+			adj[n] = out
 		}
-		if found == nil {
-			return nil
-		}
-		out := make([]node, 0, len(found.ExecMsgs))
-		for _, m := range found.ExecMsgs {
-			out = append(out, node{chain: m.ChainID, num: m.BlockNum})
-		}
-		return out
 	}
 
-	var cycleChain eth.ChainID
-	var cycleNum uint64
-	var found bool
-
-	var dfs func(n node) bool
-	dfs = func(n node) bool {
-		color[n] = gray
-		for _, nx := range neighbors(n) {
-			switch color[nx] {
-			case gray:
-				cycleChain = nx.chain
-				cycleNum = nx.num
-				return true
-			case white:
-				if dfs(nx) {
-					return true
-				}
-			}
-		}
-		color[n] = black
-		return false
+	// frame is one entry on the explicit DFS stack. childIdx is the index
+	// of the next child to visit; when childIdx == len(adj[node]) the
+	// node is finished and gets colored black on pop.
+	type frame struct {
+		n        node
+		childIdx int
 	}
 
 	for chain, logs := range s.LogsDB {
 		for _, b := range logs {
-			n := node{chain: chain, num: b.Ref.ID.Number}
-			if color[n] != white {
+			start := node{chain: chain, num: b.Ref.ID.Number}
+			if color[start] != white {
 				continue
 			}
-			if dfs(n) {
-				found = true
-				return cycleChain, cycleNum, true
+			stack := []frame{{n: start}}
+			color[start] = gray
+			for len(stack) > 0 {
+				top := &stack[len(stack)-1]
+				children := adj[top.n]
+				if top.childIdx >= len(children) {
+					color[top.n] = black
+					stack = stack[:len(stack)-1]
+					continue
+				}
+				nx := children[top.childIdx]
+				top.childIdx++
+				switch color[nx] {
+				case gray:
+					return nx.chain, nx.num, true
+				case white:
+					color[nx] = gray
+					stack = append(stack, frame{n: nx})
+				}
 			}
 		}
 	}
-	return cycleChain, cycleNum, found
+	return eth.ChainID{}, 0, false
+}
+
+// -----------------------------------------------------------------------------
+// I7 — Environmental clause: no higher L2 block exists with timestamp <= ts.
+//
+// SPEC.md I7 second sentence: "All children of C^j_i have timestamp > i."
+// The LogsDB-internal half is checked structurally by CheckI7_HighestBlockLeqTS
+// in invariants.go. This env predicate handles the "live L2 may have a
+// higher block we have not yet imported" case by asking the oracle.
+// -----------------------------------------------------------------------------
+
+// CheckI7_NoHigherL2Block delegates the "no descendant on the live L2
+// with timestamp <= verified timestamp other than C^j_i" clause to the
+// environmental oracle. See SPEC I7 (HYBRID class) and SPEC §4.
+func CheckI7_NoHigherL2Block(s Snapshot, env Env) error {
+	if env == nil {
+		return nil
+	}
+	var errs []error
+	for vi, v := range s.Verified {
+		for _, chain := range s.Chains {
+			head, ok := v.L2Heads[chain]
+			if !ok {
+				continue // structural CheckI7 already reports this
+			}
+			higher, err := env.HasHigherL2BlockAtOrBelow(chain, head, v.Timestamp)
+			if err != nil {
+				errs = append(errs, newIndexedErr("I7", chain, vi, fmt.Sprintf(
+					"env.HasHigherL2BlockAtOrBelow(%s, %s, %d) failed: %v",
+					chain, head, v.Timestamp, err)))
+				continue
+			}
+			if higher {
+				errs = append(errs, newIndexedErr("I7", chain, vi, fmt.Sprintf(
+					"live L2 has a block strictly higher than C^j_%d=%s with Time<=%d",
+					vi, head, v.Timestamp)))
+			}
+		}
+	}
+	return errors.Join(errs...)
 }
 
 // -----------------------------------------------------------------------------
@@ -259,8 +296,14 @@ func CheckI8_VerifiedL1Linear(s Snapshot, env Env) error {
 // -----------------------------------------------------------------------------
 
 // CheckI9_MinimalL1Cover uses env.DeriveL1 to verify that the recorded
-// L1 inclusion for every Verified entry is the maximum (by block number)
-// of the DeriveL1 results for its L2 heads.
+// L1 inclusion for every Verified entry is the maximum of the DeriveL1
+// results for its L2 heads.
+//
+// "Maximum" is checked by full BlockID equality (not just .Number) so
+// that two distinct L1 blocks at the same height after a reorg do not
+// silently pass. Additionally, every per-chain DeriveL1(C^j) must be an
+// ancestor of v.L1Inclusion (or equal), validating the "minimal L1
+// covering all heads" half via env.IsL1Ancestor.
 func CheckI9_MinimalL1Cover(s Snapshot, env Env) error {
 	if env == nil {
 		return nil
@@ -269,6 +312,8 @@ func CheckI9_MinimalL1Cover(s Snapshot, env Env) error {
 	for i, v := range s.Verified {
 		var maxL1 eth.BlockID
 		var maxSeen bool
+		// Pass 1: find the max-by-number derive among all L2 heads, and
+		// verify each derive is an ancestor of v.L1Inclusion.
 		for _, chain := range s.Chains {
 			head, ok := v.L2Heads[chain]
 			if !ok {
@@ -286,14 +331,33 @@ func CheckI9_MinimalL1Cover(s Snapshot, env Env) error {
 				maxL1 = l1
 				maxSeen = true
 			}
+			// Ancestry check: deriveL1(C^j) must lie on the same linear
+			// chain as v.L1Inclusion (either equal, or an ancestor).
+			if l1 != v.L1Inclusion {
+				ok, ancErr := env.IsL1Ancestor(l1, v.L1Inclusion)
+				if ancErr != nil {
+					errs = append(errs, newErr("I9", fmt.Sprintf(
+						"Verified[%d] env.IsL1Ancestor(%s, %s) failed: %v",
+						i, l1, v.L1Inclusion, ancErr)))
+					continue
+				}
+				if !ok {
+					errs = append(errs, newErr("I9", fmt.Sprintf(
+						"Verified[%d] DeriveL1(C^j on %s)=%s is not an ancestor of L1Inclusion=%s",
+						i, chain, l1, v.L1Inclusion)))
+				}
+			}
 		}
 		if !maxSeen {
 			continue
 		}
-		if v.L1Inclusion.Number != maxL1.Number {
+		// Pass 2: the recorded L1Inclusion must equal the max DeriveL1
+		// (by full BlockID, not just Number) so that two distinct L1
+		// blocks at the same height after a reorg are not conflated.
+		if v.L1Inclusion != maxL1 {
 			errs = append(errs, newErr("I9", fmt.Sprintf(
-				"Verified[%d].L1Inclusion.Number=%d != max_j(DeriveL1(C^j)).Number=%d",
-				i, v.L1Inclusion.Number, maxL1.Number)))
+				"Verified[%d].L1Inclusion=%s != max_j(DeriveL1(C^j))=%s",
+				i, v.L1Inclusion, maxL1)))
 		}
 	}
 	return errors.Join(errs...)

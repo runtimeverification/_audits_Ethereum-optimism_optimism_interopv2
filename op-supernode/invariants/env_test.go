@@ -203,6 +203,10 @@ func TestCheckI9_Cover_OK(t *testing.T) {
 	env := newFakeEnv()
 	env.derive[blockID(1, 1)] = blockID(10, 1000)
 	env.derive[blockID(2, 2)] = blockID(11, 1001) // higher number; becomes the max
+	// I9 now requires every per-chain DeriveL1 to be an ancestor (or
+	// equal to) the recorded L1Inclusion. blockID(10,1000) must be an
+	// ancestor of blockID(11,1001).
+	env.ancestor[[2]eth.BlockID{blockID(10, 1000), blockID(11, 1001)}] = true
 	if err := CheckI9_MinimalL1Cover(s, env); err != nil {
 		t.Fatalf("I9 should pass: %v", err)
 	}
@@ -225,6 +229,86 @@ func TestCheckI9_Cover_WrongMax(t *testing.T) {
 	err := CheckI9_MinimalL1Cover(s, env)
 	if err == nil || !strings.Contains(err.Error(), "[I9]") {
 		t.Fatalf("expected I9 max-mismatch, got: %v", err)
+	}
+}
+
+// TestCheckI9_DifferentBlockSameNumber regression-tests the strengthened
+// I9 check: a recorded L1Inclusion that has the same .Number as the max
+// DeriveL1 but a different hash (post-reorg) must NOT pass I9.
+func TestCheckI9_DifferentBlockSameNumber(t *testing.T) {
+	s := Snapshot{
+		Chains: []eth.ChainID{chainA()},
+		Verified: []VerifiedEntry{{
+			Timestamp:   100,
+			L1Inclusion: blockID(0xAA, 1001), // hash-byte 0xAA at height 1001
+			L2Heads: map[eth.ChainID]eth.BlockID{
+				chainA(): blockID(1, 1),
+			},
+		}},
+	}
+	env := newFakeEnv()
+	// DeriveL1 returns a sibling at the same height with a different hash.
+	env.derive[blockID(1, 1)] = blockID(0xBB, 1001)
+	err := CheckI9_MinimalL1Cover(s, env)
+	if err == nil || !strings.Contains(err.Error(), "[I9]") {
+		t.Fatalf("expected I9 hash-mismatch failure, got: %v", err)
+	}
+}
+
+// TestCheckI9_DeriveNotAncestor exercises the new ancestry clause: a
+// per-chain DeriveL1 that is not an ancestor of L1Inclusion must fail.
+func TestCheckI9_DeriveNotAncestor(t *testing.T) {
+	s := Snapshot{
+		Chains: []eth.ChainID{chainA(), chainB()},
+		Verified: []VerifiedEntry{{
+			L1Inclusion: blockID(11, 1001),
+			L2Heads: map[eth.ChainID]eth.BlockID{
+				chainA(): blockID(1, 1),
+				chainB(): blockID(2, 2),
+			},
+		}},
+	}
+	env := newFakeEnv()
+	env.derive[blockID(1, 1)] = blockID(10, 1000)
+	env.derive[blockID(2, 2)] = blockID(11, 1001)
+	// blockID(10,1000) is NOT marked as an ancestor of blockID(11,1001).
+	err := CheckI9_MinimalL1Cover(s, env)
+	if err == nil || !strings.Contains(err.Error(), "ancestor") {
+		t.Fatalf("expected ancestry failure, got: %v", err)
+	}
+}
+
+// TestCheckI7_NoHigherL2Block_OK exercises the new env clause for I7
+// when the oracle says no higher block exists.
+func TestCheckI7_NoHigherL2Block_OK(t *testing.T) {
+	s := Snapshot{
+		Chains: []eth.ChainID{chainA()},
+		Verified: []VerifiedEntry{{
+			Timestamp: 100,
+			L2Heads:   map[eth.ChainID]eth.BlockID{chainA(): blockID(1, 1)},
+		}},
+	}
+	env := newFakeEnv() // higherL2 map empty -> false
+	if err := CheckI7_NoHigherL2Block(s, env); err != nil {
+		t.Fatalf("I7 env clause should pass: %v", err)
+	}
+}
+
+// TestCheckI7_NoHigherL2Block_Fail exercises the failure path: oracle
+// reports a higher live L2 block that should have been imported.
+func TestCheckI7_NoHigherL2Block_Fail(t *testing.T) {
+	s := Snapshot{
+		Chains: []eth.ChainID{chainA()},
+		Verified: []VerifiedEntry{{
+			Timestamp: 100,
+			L2Heads:   map[eth.ChainID]eth.BlockID{chainA(): blockID(1, 1)},
+		}},
+	}
+	env := newFakeEnv()
+	env.higherL2[chainA()] = map[uint64]bool{100: true}
+	err := CheckI7_NoHigherL2Block(s, env)
+	if err == nil || !strings.Contains(err.Error(), "[I7]") {
+		t.Fatalf("expected I7 env failure, got: %v", err)
 	}
 }
 

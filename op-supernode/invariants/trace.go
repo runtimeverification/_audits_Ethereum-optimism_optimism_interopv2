@@ -2,6 +2,7 @@ package invariants
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -113,19 +114,31 @@ func VerifyTrace(tr *Trace) ([]error, error) {
 	return nil, nil
 }
 
-// collectIDs walks a joined error tree invoking visit on every *Error's ID.
+// collectIDs walks a joined error tree invoking visit on every *Error's
+// ID. Uses errors.As so wrapped errors (e.g. fmt.Errorf("%w", e)) are
+// still discovered.
 func collectIDs(err error, visit func(string)) {
 	if err == nil {
 		return
 	}
-	if e, ok := err.(*Error); ok {
-		visit(e.ID)
+	var ie *Error
+	if errors.As(err, &ie) {
+		visit(ie.ID)
 	}
+	// Walk multi-error trees too: errors.As only finds the first match, so
+	// for joined errors we need to descend manually.
 	type multi interface{ Unwrap() []error }
 	if m, ok := err.(multi); ok {
 		for _, c := range m.Unwrap() {
 			collectIDs(c, visit)
 		}
+		return
+	}
+	// Single-wrap chain: descend via the standard Unwrap to find any
+	// nested *Error past the first match.
+	type single interface{ Unwrap() error }
+	if s, ok := err.(single); ok {
+		collectIDs(s.Unwrap(), visit)
 	}
 }
 

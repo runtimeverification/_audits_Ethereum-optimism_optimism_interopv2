@@ -114,12 +114,22 @@ type StaticStateView struct {
 	S Snapshot
 }
 
-func (v StaticStateView) ActivationTS() uint64     { return v.S.ActivationTS }
-func (v StaticStateView) Chains() []eth.ChainID    { return append([]eth.ChainID{}, v.S.Chains...) }
-func (v StaticStateView) Verified() []VerifiedEntry { return append([]VerifiedEntry{}, v.S.Verified...) }
-func (v StaticStateView) LogsDBFor(c eth.ChainID) []BlockWithLogs {
-	return append([]BlockWithLogs{}, v.S.LogsDB[c]...)
+func (v StaticStateView) ActivationTS() uint64  { return v.S.ActivationTS }
+func (v StaticStateView) Chains() []eth.ChainID { return append([]eth.ChainID{}, v.S.Chains...) }
+
+// Verified deep-copies the Verified slice — including each entry's
+// L2Heads map — so callers can mutate the result without aliasing the
+// underlying snapshot.
+func (v StaticStateView) Verified() []VerifiedEntry {
+	return cloneVerifiedSlice(v.S.Verified)
 }
+
+// LogsDBFor deep-copies the per-chain LogsDB slice including each
+// block's ExecMsgs slice.
+func (v StaticStateView) LogsDBFor(c eth.ChainID) []BlockWithLogs {
+	return cloneBlockWithLogsSlice(v.S.LogsDB[c])
+}
+
 func (v StaticStateView) DenyListFor(c eth.ChainID) []DenyListEntry {
 	return append([]DenyListEntry{}, v.S.DenyList[c]...)
 }

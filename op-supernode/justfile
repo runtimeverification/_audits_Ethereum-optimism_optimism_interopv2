@@ -39,11 +39,14 @@ verify-invariants-go:
 verify-invariants-go-tagged:
     go test -tags=supernode_invariants ./invariants/...
 
-# Run the state-machine fuzzer against the reference model for 30s (CI default).
-# Increase duration with FUZZTIME=5m just fuzz-invariants.
+# Run the state-machine fuzzers against the reference model. go test
+# only accepts one -fuzz target per invocation, so the single-chain and
+# multi-chain fuzzers run sequentially. Increase per-target duration
+# with FUZZTIME=5m just fuzz-invariants.
 FUZZTIME := env_var_or_default("FUZZTIME", "30s")
 fuzz-invariants:
-    go test -run=^$ -fuzz=FuzzReferenceModel -fuzztime={{FUZZTIME}} ./invariants/
+    go test -run=^$ -fuzz=^FuzzReferenceModel$ -fuzztime={{FUZZTIME}} ./invariants/
+    go test -run=^$ -fuzz=^FuzzReferenceModelMultiChain$ -fuzztime={{FUZZTIME}} ./invariants/
 
 # Run every layer: Dafny proofs + Go invariant tests (untagged + tagged) + fuzz.
 # Single gate for CI.
