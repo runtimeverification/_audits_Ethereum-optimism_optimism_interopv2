@@ -1,6 +1,7 @@
 include "Types.dfy"
 
 class VerifiedDB {
+    ghost const chainIDs : set<ChainID>
     var initialized : bool
     var lastTimestamp : Option<uint64>
     var verified : map<uint64, VerifiedResult>
@@ -11,7 +12,7 @@ class VerifiedDB {
         forall t1, t2 :: (t1 in s && t1 < t2 < max) ==> t2 in s
     }
 
-    predicate Invariants()
+    ghost predicate Invariants()
         reads this
     {
         match lastTimestamp {
@@ -21,9 +22,32 @@ class VerifiedDB {
             case Some(lastTs) =>
                 initialized == true &&
                 lastTs in verified.Keys &&
-                (forall ts :: ts in verified.Keys ==> ts <= lastTs) &&
-                NoGaps(verified.Keys, lastTs)
+                (forall ts :: ts in verified.Keys ==> 0 < ts <= lastTs) &&
+                NoGaps(verified.Keys, lastTs) &&
+                (forall result :: result in verified.Values ==> result.L2Heads.Keys == chainIDs)
+        } &&
+        (pendingTransition != None ==> PendingTransitionIsConsistent(pendingTransition.value, chainIDs))
+    }
+
+    ghost function ChainIDs() : set<ChainID>
+        reads this
+    {
+        chainIDs
+    }
+
+    ghost function L2HeadsAtTimestamp(ts : uint64) : Option<map<ChainID, BlockID>>
+        reads this
+    {
+        match Get(ts) {
+            case None => None
+            case Some(result) => Some(result.L2Heads)
         }
+    }
+
+    ghost function Verified() : map<uint64, VerifiedResult>
+        reads this
+    {
+        verified
     }
 
     constructor()
@@ -34,10 +58,18 @@ class VerifiedDB {
         initLastTimestamp();
     }
 
-    constructor OpenVerifiedDB(verified_ : map<uint64, VerifiedResult>, pendingTransition_ : Option<PendingTransition>)
+    constructor OpenVerifiedDB(
+        ghost chainIDs_ : set<ChainID>,
+        verified_ : map<uint64, VerifiedResult>,
+        pendingTransition_ : Option<PendingTransition>
+    )
+        requires forall ts :: ts in verified_.Keys ==> 0 < ts
         requires verified_ != map[] ==> NoGaps(verified_.Keys, Max(verified_.Keys).value)
+        requires forall result :: result in verified_.Values ==> result.L2Heads.Keys == chainIDs_
+        requires pendingTransition_ != None ==> PendingTransitionIsConsistent(pendingTransition_.value, chainIDs_)
         ensures Invariants()
     {
+        chainIDs := chainIDs_;
         verified := verified_;
         pendingTransition := pendingTransition_;
         new;
@@ -45,11 +77,16 @@ class VerifiedDB {
     }
 
     method initLastTimestamp()
+        requires forall ts :: ts in verified.Keys ==> 0 < ts
         requires verified != map[] ==> NoGaps(verified.Keys, Max(verified.Keys).value)
+        requires forall result :: result in verified.Values ==> result.L2Heads.Keys == chainIDs
+        requires pendingTransition != None ==> PendingTransitionIsConsistent(pendingTransition.value, chainIDs)
         modifies this
         ensures Invariants()
+        ensures pendingTransition == old(pendingTransition)
         ensures verified == old(verified)
         ensures lastTimestamp == Max(verified.Keys)
+        ensures verified != map[] ==> lastTimestamp != None
     {
         lastTimestamp := Max(verified.Keys);
         initialized := lastTimestamp != None;
@@ -58,8 +95,11 @@ class VerifiedDB {
     method Commit(result : VerifiedResult) returns (success : bool)
         requires Invariants()
         requires lastTimestamp != None ==> lastTimestamp.value < MAX_UINT64
+        requires 0 < result.Timestamp
+        requires result.L2Heads.Keys == chainIDs
         modifies this
         ensures Invariants()
+        ensures pendingTransition == old(pendingTransition)
         ensures success ==> (result.Timestamp in verified && verified[result.Timestamp] == result)
         ensures
             if !success || result.Timestamp in old(verified) then
@@ -124,15 +164,23 @@ class VerifiedDB {
         requires Invariants()
         modifies this
         ensures Invariants()
-        ensures (old(lastTimestamp) == None || old(lastTimestamp).value < timestamp) <==> !deleted
+        ensures pendingTransition == old(pendingTransition)
         ensures
-            if !deleted then
+            if old(lastTimestamp) == None || old(lastTimestamp).value < timestamp then
+                !deleted &&
                 verified == old(verified) &&
                 lastTimestamp == old(lastTimestamp) &&
                 initialized == old(initialized)
+            else if timestamp == 0 || (timestamp - 1) !in old(verified) then
+                deleted &&
+                verified == map[] &&
+                lastTimestamp == None &&
+                initialized == false
             else
-                lastTimestamp == None ||
-                lastTimestamp.value < timestamp // actually lastTimestamp.value == timestamp - 1
+                deleted &&
+                verified == old(verified) - (set t | t in old(verified).Keys && timestamp <= t) &&
+                lastTimestamp != None &&
+                lastTimestamp.value == timestamp - 1
     {
         var toDelete := (set t | t in verified.Keys && timestamp <= t);
         verified := verified - toDelete;
@@ -140,21 +188,35 @@ class VerifiedDB {
         if toDelete == {} {
             return false;
         } else {
+            assert old(verified) != map[];
+            assert verified != map[] ==> (timestamp - 1) in verified;
+            assert verified != map[] ==> forall t :: timestamp <= t ==> t !in verified;
+            assert verified != map[] ==> Max(verified.Keys) == Some(timestamp - 1);
+            
             initLastTimestamp();
+            
+            assert (timestamp != 0 && (timestamp - 1) in old(verified)) ==> (timestamp - 1) in verified;
+            assert lastTimestamp != None ==> lastTimestamp.value == timestamp - 1;
+            
             return true;
         }
     }
 
     method SetPendingTransition(pending : PendingTransition)
         requires Invariants()
+        requires PendingTransitionIsConsistent(pending, chainIDs)
         modifies this
         ensures Invariants()
+        ensures pendingTransition == Some(pending)
+        ensures verified == old(verified)
     {
         pendingTransition := Some(pending);
     }
 
     function GetPendingTransition() : Option<PendingTransition>
+        requires Invariants()
         reads this
+        ensures GetPendingTransition() != None ==> PendingTransitionIsConsistent(GetPendingTransition().value, chainIDs)
     {
         pendingTransition
     }
@@ -163,6 +225,8 @@ class VerifiedDB {
         requires Invariants()
         modifies this
         ensures Invariants()
+        ensures pendingTransition == None
+        ensures lastTimestamp == old(lastTimestamp)
     {
         pendingTransition := None;
     }

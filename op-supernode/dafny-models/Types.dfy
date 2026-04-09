@@ -10,6 +10,13 @@ newtype Hash = uint256
 newtype ChainID = uint256
 datatype Option<T> = None | Some(value : T)
 
+datatype Error
+    = NotFound
+    | AssumptionViolation
+    | Other
+
+datatype OkOrErr<T> = Ok(value : T) | Err(err : Error)
+
 function Max(s : set<uint64>) : Option<uint64>
     ensures{:axiom} s == {} <==> Max(s) == None
     ensures{:axiom} s != {} ==> Max(s).value in s
@@ -18,16 +25,47 @@ function Max(s : set<uint64>) : Option<uint64>
 function Enumerate<T(!new)>(s : set<T>) : seq<T>
     ensures{:axiom} |Enumerate(s)| == |s|
     ensures{:axiom} forall x :: x in Enumerate(s) <==> x in s
+    ensures{:axiom} forall i, j :: 0 <= i < j < |Enumerate(s)| ==> Enumerate(s)[i] != Enumerate(s)[j]
+    // ^ redundant, but helps verification since it's hard for Dafny to prove it otherwise
+
+ghost predicate IsRange(s : set<uint64>, lower : uint64, upper : uint64)
+{
+    forall x :: (lower <= x <= upper) <==> x in s
+}
 
 datatype BlockID = BlockID(
     Hash : Hash,
     Number : uint64
 )
 
+datatype BlockSeal = BlockSeal(
+    Hash : Hash,
+    Number : uint64,
+    Timestamp : uint64
+)
+
 datatype BlockRef = BlockRef(
     ID : BlockID,
     ParentHash : Hash,
     Time : uint64
+)
+
+datatype BlockInfo = BlockInfo(
+    ID : BlockID,
+    ParentHash : Hash,
+    Time : uint64
+)
+
+datatype Log = Log(
+    ExecMsg : Option<ExecutingMessage>
+)
+
+datatype Receipt = Receipt(
+    Logs : seq<Log>
+)
+
+datatype SyncStatus = SyncStatus(
+    CurrentL1 : BlockRef
 )
 
 datatype ChainsReadyResult
@@ -52,15 +90,10 @@ datatype RoundObservation
         L1Inclusion : BlockID
     )
 
-datatype RewindPlan = RewindPlan(
-    RewindAtOrAfter : uint64,
-    ResetAllChainsTo : Option<uint64>,
-    TargetHeads : map<ChainID, BlockID>
-)
-
 datatype PendingTransition
     = Rewind(
-        RewindPlan : RewindPlan
+        RewindAtOrAfter : uint64,
+        TargetHeads : Option<map<ChainID, BlockID>>
     )
     | Advance(
         Timestamp : uint64,
@@ -72,9 +105,24 @@ datatype PendingTransition
         InvalidHeads : map<ChainID, BlockID>
     )
 
+predicate PendingTransitionIsConsistent(pending : PendingTransition, chainIDs : set<ChainID>)
+{
+    match pending {
+        case Rewind(rewindAtOrAfter, targetHeads) =>
+            0 < rewindAtOrAfter &&
+            (targetHeads != None ==> targetHeads.value.Keys == chainIDs)
+        case Advance(ts, _, l2Heads) =>
+            0 < ts &&
+            l2Heads.Keys == chainIDs
+        case Invalidate(_, invalidHeads) =>
+            invalidHeads != map[] &&
+            invalidHeads.Keys <= chainIDs
+    }
+}
+
 datatype StepOutput
     = Wait
-    | Step(PendingTransition)
+    | Step(pending : PendingTransition)
 
 datatype VerifiedResult = VerifiedResult(
     Timestamp : uint64,
@@ -82,11 +130,19 @@ datatype VerifiedResult = VerifiedResult(
     L2Heads : map<ChainID, BlockID>
 )
 
+datatype ContainsQuery = ContainsQuery(
+	Timestamp : uint64,
+	BlockNum : uint64,
+	LogIdx : uint32,
+	Checksum : Hash
+)
+
 datatype ExecutingMessage = ExecutingMessage(
     ChainID : ChainID,
 	BlockNum : uint64,
 	LogIdx : uint32,
-	Timestamp : uint64
+	Timestamp : uint64,
+    Checksum : Hash
 )
 
 datatype FrontierBlockView = FrontierBlockView(
