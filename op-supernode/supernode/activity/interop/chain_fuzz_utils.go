@@ -96,7 +96,11 @@ func (c RandomChainContainer) Start(ctx context.Context) error                  
 func (c RandomChainContainer) Stop(ctx context.Context) error                   { return nil }
 func (c RandomChainContainer) Pause(ctx context.Context) error                  { return nil }
 func (c RandomChainContainer) Resume(ctx context.Context) error                 { return nil }
+func (c RandomChainContainer) PauseAndStopVN(ctx context.Context) error         { return nil }
 func (c RandomChainContainer) RegisterVerifier(v activity.VerificationActivity) {}
+func (c RandomChainContainer) VerifierCurrentL1s() []eth.BlockID {
+	return nil
+}
 
 func (c RandomChainContainer) LocalSafeBlockAtTimestamp(ctx context.Context, ts uint64) (eth.L2BlockRef, error) {
 	var theblock *eth.L2BlockRef = nil;
@@ -173,9 +177,14 @@ func (c RandomChainContainer) BlockTime() uint64 {
 	return uint64(c.randomChain.blockTimes[c.chainID])
 }
 
-func (c RandomChainContainer) InvalidateBlock(ctx context.Context, height uint64, payloadHash common.Hash) (bool, error) {
+func (c RandomChainContainer) InvalidateBlock(ctx context.Context, height uint64, payloadHash common.Hash, decisionTimestamp uint64) (bool, error) {
 	//TODO
 	return true, nil
+}
+
+func (c RandomChainContainer) PruneDeniedAtOrAfterTimestamp(timestamp uint64) (map[uint64][]common.Hash, error) {
+	// TODO
+	return nil, nil
 }
 
 func (c RandomChainContainer) IsDenied(height uint64, payloadHash common.Hash) (bool, error) {
@@ -328,6 +337,7 @@ func (p *RandomChainParams) MakeRandomChain(t *testing.T, seed int64) (res Rando
 		// Add a random block to it
 		lastBlock := res.chainBlocks[nextChain][len(res.chainBlocks[nextChain])-1]
 		block := testutils.NextRandomL2Ref(r, uint64(res.blockTimes[nextChain]), *lastBlock, eth.BlockID{})
+		t.Logf("Adding block: chain=%s, timestamp=%d", nextChain.String(), block.Time)
 		res.chainBlocks[nextChain] = append(res.chainBlocks[nextChain], &block)
 		res.addRandomLog(ChainBlock{nextChain, &block})
 	}
@@ -395,6 +405,12 @@ func TestMakeRandomChain(t *testing.T) {
 	t.Run("Correct number of chains", func(t *testing.T) {
 		require.Equal(t, params.chainCount, len(chain.chainIDs))
 	})
+}
+
+var _ l1ByNumberSource = RandomChain{}
+
+func (rc RandomChain) L1BlockRefByNumber(ctx context.Context, num uint64) (eth.L1BlockRef, error) {
+	return rc.l1Source[num], nil
 }
 
 func (rc RandomChain) addRandomLog(initcb ChainBlock) *types2.Log {
