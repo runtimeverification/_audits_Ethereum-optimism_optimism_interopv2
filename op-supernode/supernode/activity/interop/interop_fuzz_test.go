@@ -33,10 +33,10 @@ func FuzzVerifyInteropMessages(f *testing.F) {
 		// Update the LogDBs for the chains
 		for {
 			advanced, err := interop.progressAndRecord()
-			require.NoError(t, err)
 			if !advanced {
 				break
 			}
+			require.NoError(t, err)
 		}
 
 		randomChain := fuzzInterop.randomChain
@@ -47,7 +47,7 @@ func FuzzVerifyInteropMessages(f *testing.F) {
 		blocksAtTimestamp, err := interop.checkChainsReady(safeTimestamp)
 		require.NoError(t, err)
 
-		result, err := interop.verifyInteropMessages(safeTimestamp, blocksAtTimestamp)
+		result, err := interop.verifyInteropMessages(safeTimestamp, blocksAtTimestamp.blocks)
 
 		if !randomChain.isInvalid {
 			require.NoError(t, err)
@@ -149,7 +149,7 @@ func (h *interopFuzzHarness) Build() *interopFuzzHarness {
 
 	h.mocks = h.randomChain.GetContainers()
 	logger := gethlog.NewLogger(gethlog.NewTerminalHandler(testWriter{h.t}, true))
-	h.interop = New(logger, h.activationTime, h.mocks, h.dataDir)
+	h.interop = New(logger, h.activationTime, h.mocks, h.dataDir, h.randomChain)
 	if h.interop != nil {
 		h.interop.ctx = context.Background()
 		h.t.Cleanup(func() { _ = h.interop.Stop(context.Background()) })
