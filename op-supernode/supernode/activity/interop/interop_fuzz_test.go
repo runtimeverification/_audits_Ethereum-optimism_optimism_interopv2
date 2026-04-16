@@ -50,6 +50,7 @@ func FuzzVerifyInteropMessages(f *testing.F) {
 		result, err := interop.verifyInteropMessages(safeTimestamp, blocksAtTimestamp.blocks)
 
 		requireLogsDBChainIntegrity(t, interop)
+		requireVerifiedDBChainIntegrity(t, interop)
 
 		if !randomChain.isInvalid {
 			require.NoError(t, err)
