@@ -23,7 +23,7 @@ type InvalidInfo interface {
 	TestResult(result Result)
 }
 
-func (rc RandomChain) ExecMsgForLog(chain eth.ChainID, block eth.L2BlockRef, log *types2.Log) *types2.Log {
+func (rc *RandomChain) ExecMsgForLog(chain eth.ChainID, block eth.L2BlockRef, log *types2.Log) *types2.Log {
 	payloadHash := crypto.Keccak256Hash(types.LogToMessagePayload(log))
 
 	msg := types.Message{
@@ -196,12 +196,12 @@ func (c RandomChainContainer) SetResetCallback(cb cc.ResetCallback) {
 	//TODO
 }
 
-func (rc RandomChain) GetContainers() (map[eth.ChainID]cc.ChainContainer) {
+func (rc *RandomChain) GetContainers() (map[eth.ChainID]cc.ChainContainer) {
 	chains := make(map[eth.ChainID]cc.ChainContainer);
 	for _, chain := range rc.chainIDs {
 		container := RandomChainContainer {
 			chainID:     chain,
-			randomChain: &rc,
+			randomChain: rc,
 		}
 		chains[chain] = container
 	}
@@ -413,31 +413,31 @@ func (rc RandomChain) L1BlockRefByNumber(ctx context.Context, num uint64) (eth.L
 	return rc.l1Source[num], nil
 }
 
-func (rc RandomChain) addRandomLog(initcb ChainBlock) *types2.Log {
+func (rc *RandomChain) addRandomLog(initcb ChainBlock) *types2.Log {
 	initiatingLog := testutils.RandomLog(rc.randomGenerator)
 	initiatingLog.Index = uint(len(rc.generatedLogs[initcb]))
 	rc.generatedLogs[initcb] = append(rc.generatedLogs[initcb], initiatingLog)
 	return initiatingLog
 }
 
-func (rc RandomChain) addExecutingMessage(execcb ChainBlock, initcb ChainBlock, initiatingLog *types2.Log) {
+func (rc *RandomChain) addExecutingMessage(execcb ChainBlock, initcb ChainBlock, initiatingLog *types2.Log) {
 	execLog := rc.ExecMsgForLog(initcb.chain, *initcb.block, initiatingLog)
 	execLog.Index = uint(len(rc.generatedLogs[execcb]))
 	rc.generatedLogs[execcb] = append(rc.generatedLogs[execcb], execLog)
 }
 
-func (rc RandomChain) addExecutingMessageWithDependency(execcb ChainBlock, initcb ChainBlock, initiatingLog *types2.Log) {
+func (rc *RandomChain) addExecutingMessageWithDependency(execcb ChainBlock, initcb ChainBlock, initiatingLog *types2.Log) {
 	rc.addExecutingMessage(execcb, initcb, initiatingLog)
 	rc.dependencies[execcb] = append(rc.dependencies[execcb], initcb)
 }
 
-func (rc RandomChain) addInvalidExecutingMessage(execcb ChainBlock, initcb ChainBlock, initiatingLog *types2.Log) {
+func (rc *RandomChain) addInvalidExecutingMessage(execcb ChainBlock, initcb ChainBlock, initiatingLog *types2.Log) {
 	execLog := rc.InvalidExecMsgForLog(initcb.chain, *initcb.block, initiatingLog)
 	execLog.Index = uint(len(rc.generatedLogs[execcb]))
 	rc.generatedLogs[execcb] = append(rc.generatedLogs[execcb], execLog)
 }
 
-func (rc RandomChain) GenerateReceiptsFromLogs() {
+func (rc *RandomChain) GenerateReceiptsFromLogs() {
 	for _, cb := range rc.allBlocks {
 		chainid, block := cb.chain, cb.block
 		logs := rc.generatedLogs[cb]
@@ -453,7 +453,7 @@ func randomInRange(r *rand.Rand, lowerIncluding int, upperExcluding int) int {
 	return r.Intn(upperExcluding-lowerIncluding) + lowerIncluding
 }
 
-func (rc RandomChain) InvalidExecMsgForLog(chain eth.ChainID, block eth.L2BlockRef, log *types2.Log) *types2.Log {
+func (rc *RandomChain) InvalidExecMsgForLog(chain eth.ChainID, block eth.L2BlockRef, log *types2.Log) *types2.Log {
 	payloadHash := crypto.Keccak256Hash(types.LogToMessagePayload(log))
 
 	r := rc.randomGenerator
@@ -496,7 +496,7 @@ func (rc RandomChain) InvalidExecMsgForLog(chain eth.ChainID, block eth.L2BlockR
 	}
 }
 
-func (rc RandomChain) InsertMessageWithInvalidIdentifier() {
+func (rc *RandomChain) InsertMessageWithInvalidIdentifier() {
 	r := rc.randomGenerator
 	candidateIndex := randomInRange(r, len(rc.chainIDs), len(rc.allBlocks))
 	randomIndex := randomInRange(r, len(rc.chainIDs), len(rc.allBlocks))
@@ -508,22 +508,27 @@ func (rc RandomChain) InsertMessageWithInvalidIdentifier() {
 	rc.addInvalidExecutingMessage(candidateBlock, randomBlock, randomLog)
 }
 
-func (rc RandomChain) Invalidate() {
+func (rc *RandomChain) Invalidate() {
 	r := rc.randomGenerator
+	rc.t.Logf("Invalidating chains!")
 	switch r.Intn(4) {
 	case 0:
+		rc.t.Logf("Creating a cycle")
 		rc.CreateCycle()
 	case 1:
+		rc.t.Logf("Creating a self dependency")
 		rc.InsertSelfDependency()
 	case 2:
+		rc.t.Logf("Creating an invalid message")
 		rc.InsertMessageWithInvalidIdentifier()
 	case 3:
+		rc.t.Logf("Creating a future dependency")
 		rc.InsertFutureDependency()
 	default:
 	}
 }
 
-func (rc RandomChain) InsertFutureDependency() {
+func (rc *RandomChain) InsertFutureDependency() {
 	t := rc.t
 	r := rc.randomGenerator
 	latestPossibleIndex := 0
@@ -548,7 +553,7 @@ func (rc RandomChain) InsertFutureDependency() {
 	rc.addExecutingMessageWithDependency(candidateBlock, futureBlock, initiatingLog)
 }
 
-func (rc RandomChain) InsertSelfDependency() {
+func (rc *RandomChain) InsertSelfDependency() {
 	r := rc.randomGenerator
 	candidateIndex := randomInRange(r, len(rc.chainIDs), len(rc.allBlocks))
 	candidate := rc.allBlocks[candidateIndex]
@@ -577,7 +582,7 @@ func (c CycleInfo) TestResult(result Result) {
 	}
 }
 
-func (rc RandomChain) CreateCycle() {
+func (rc *RandomChain) CreateCycle() {
 	sameTimeStampSets := SameTimeStampSets(rc.allBlocks[len(rc.chainIDs):])
 	if len(sameTimeStampSets) == 0 {
 		rc.t.Logf("CreateCycle: No set of blocks with the same timestamp exists. No cycle created")
@@ -589,6 +594,7 @@ func (rc RandomChain) CreateCycle() {
 	for i, cb := range set {
 		initiatingLog := rc.addRandomLog(cb)
 		execcb := set[(i+1)%len(set)]
+		rc.t.Logf("CreateCycle: Adding dependency at time %d. chain: %s, block: %d -> chain: %s, block: %d", cb.block.Time, execcb.chain.String(), execcb.block.Number, cb.chain.String(), cb.block.Number)
 		rc.addExecutingMessageWithDependency(execcb, cb, initiatingLog)
 		info.blocks = append(info.blocks, cb)
 	}
