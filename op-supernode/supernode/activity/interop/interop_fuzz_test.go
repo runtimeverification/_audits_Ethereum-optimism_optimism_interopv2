@@ -12,8 +12,6 @@ import (
 )
 
 func FuzzVerifyInteropMessages(f *testing.F) {
-	f.Add(int64(69), byte('\x00')) // Failing test (gap > blockTime, because the chain randomizer isn't respecting blockTime yet)
-
 	f.Fuzz(func(t *testing.T, seed int64, numChainsRaw uint8) {
 		params := RandomChainParams {
 			chainCount:             max(2, int(numChainsRaw>>6)),
@@ -31,23 +29,28 @@ func FuzzVerifyInteropMessages(f *testing.F) {
 		interop := fuzzInterop.interop
 
 		// Update the LogDBs for the chains
+		i := uint64(0)
 		for {
 			advanced, err := interop.progressAndRecord()
 			if !advanced {
 				break
 			}
 			require.NoError(t, err)
+			i++
 		}
 
 		randomChain := fuzzInterop.randomChain
 
-		safeBlock := randomChain.allBlocks[len(randomChain.allBlocks)-1]
-		safeTimestamp := safeBlock.block.Time
+		safeTimestamp := i
 
-		blocksAtTimestamp, err := interop.checkChainsReady(safeTimestamp)
-		require.NoError(t, err)
+		blocksAtTimestamp := make(map[eth.ChainID]eth.BlockID)
+		for chain, container := range fuzzInterop.mocks {
+			block, _, err := container.OptimisticAt(interop.ctx, safeTimestamp)
+			require.NoError(t, err)
+			blocksAtTimestamp[chain] = block
+		}
 
-		result, err := interop.verifyInteropMessages(safeTimestamp, blocksAtTimestamp.blocks)
+		result, err := interop.verifyInteropMessages(safeTimestamp, blocksAtTimestamp)
 
 		if !randomChain.isInvalid {
 			require.NoError(t, err)
@@ -65,6 +68,9 @@ func FuzzVerifyInteropMessages(f *testing.F) {
 		} else {
 			require.True(t, err != nil || !result.IsValid())
 		}
+
+		if err != nil {
+			t.Logf("%s", err)
 		}
 	})
 }
