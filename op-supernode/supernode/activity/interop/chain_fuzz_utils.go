@@ -19,10 +19,6 @@ import (
 	"github.com/ethereum-optimism/optimism/op-supervisor/supervisor/types"
 )
 
-type InvalidInfo interface {
-	TestResult(result Result)
-}
-
 func (rc *RandomChain) ExecMsgForLog(chain eth.ChainID, block eth.L2BlockRef, log *types2.Log) *types2.Log {
 	payloadHash := crypto.Keccak256Hash(types.LogToMessagePayload(log))
 
@@ -81,7 +77,6 @@ type RandomChain struct {
 	receipts      map[eth.ChainID]map[eth.BlockID]types2.Receipts
 	blockTimes    map[eth.ChainID]int
 	isInvalid     bool
-	invalidInfo   InvalidInfo
 }
 
 var _ cc.ChainContainer = RandomChainContainer{}
@@ -569,19 +564,6 @@ func (rc *RandomChain) InsertSelfDependency() {
 	rc.generatedLogs[candidate] = append(rc.generatedLogs[candidate], initiatingLog)
 }
 
-var _ InvalidInfo = CycleInfo{}
-
-type CycleInfo struct {
-	t      *testing.T
-	blocks []ChainBlock
-}
-
-func (c CycleInfo) TestResult(result Result) {
-	for _, block := range c.blocks {
-		require.Equal(c.t, block.block.ID(), result.InvalidHeads[block.chain])
-	}
-}
-
 func (rc *RandomChain) CreateCycle() {
 	sameTimeStampSets := SameTimeStampSets(rc.allBlocks[len(rc.chainIDs):])
 	if len(sameTimeStampSets) == 0 {
@@ -590,7 +572,6 @@ func (rc *RandomChain) CreateCycle() {
 	}
 	i := rc.randomGenerator.Intn(len(sameTimeStampSets))
 	set := sameTimeStampSets[i]
-	info := CycleInfo{ t: rc.t, blocks: make([]ChainBlock, 0) }
 	firstLog := rc.addRandomLog(set[0])
 	rc.addRandomLog(set[0])
 	for i, cb := range set[:len(set)-1] {
@@ -599,7 +580,6 @@ func (rc *RandomChain) CreateCycle() {
 		execcb := set[i+1]
 		rc.t.Logf("CreateCycle: Adding dependency at time %d. chain: %s, block: %d -> chain: %s, block: %d", cb.block.Time, execcb.chain.String(), execcb.block.Number, cb.chain.String(), cb.block.Number)
 		rc.addExecutingMessageWithDependency(execcb, cb, initiatingLog)
-		info.blocks = append(info.blocks, cb)
 	}
 	// Add the final dependency which closes the cycle.
 	cb := set[len(set)-1]
@@ -610,7 +590,4 @@ func (rc *RandomChain) CreateCycle() {
 	execLog.Index = firstLog.Index
 	*firstLog = *execLog
 	rc.dependencies[execcb] = append(rc.dependencies[execcb], cb)
-	info.blocks = append(info.blocks, cb)
-
-	rc.invalidInfo = &info
 }
