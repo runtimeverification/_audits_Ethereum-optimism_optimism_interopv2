@@ -591,12 +591,26 @@ func (rc *RandomChain) CreateCycle() {
 	i := rc.randomGenerator.Intn(len(sameTimeStampSets))
 	set := sameTimeStampSets[i]
 	info := CycleInfo{ t: rc.t, blocks: make([]ChainBlock, 0) }
-	for i, cb := range set {
-		initiatingLog := rc.addRandomLog(cb)
-		execcb := set[(i+1)%len(set)]
+	firstLog := rc.addRandomLog(set[0])
+	rc.addRandomLog(set[0])
+	for i, cb := range set[:len(set)-1] {
+		// Add a chain of dependencies to the blocks.
+		initiatingLog := rc.generatedLogs[cb][len(rc.generatedLogs[cb])-1]
+		execcb := set[i+1]
 		rc.t.Logf("CreateCycle: Adding dependency at time %d. chain: %s, block: %d -> chain: %s, block: %d", cb.block.Time, execcb.chain.String(), execcb.block.Number, cb.chain.String(), cb.block.Number)
 		rc.addExecutingMessageWithDependency(execcb, cb, initiatingLog)
 		info.blocks = append(info.blocks, cb)
 	}
+	// Add the final dependency which closes the cycle.
+	cb := set[len(set)-1]
+	execcb := set[0]
+	rc.t.Logf("CreateCycle: Adding dependency at time %d. chain: %s, block: %d -> chain: %s, block: %d", cb.block.Time, execcb.chain.String(), execcb.block.Number, cb.chain.String(), cb.block.Number)
+	initiatingLog := rc.generatedLogs[cb][len(rc.generatedLogs[cb])-1]
+	execLog := rc.ExecMsgForLog(cb.chain, *cb.block, initiatingLog)
+	execLog.Index = firstLog.Index
+	*firstLog = *execLog
+	rc.dependencies[execcb] = append(rc.dependencies[execcb], cb)
+	info.blocks = append(info.blocks, cb)
+
 	rc.invalidInfo = &info
 }
