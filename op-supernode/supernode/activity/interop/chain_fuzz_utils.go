@@ -191,13 +191,27 @@ func (c RandomChainContainer) SyncStatus(ctx context.Context) (*eth.SyncStatus, 
 }
 
 func (c RandomChainContainer) OptimisticAt(ctx context.Context, ts uint64) (l2, l1 eth.BlockID, err error) {
-	//TODO
 	block, err := c.LocalSafeBlockAtTimestamp(ctx, ts)
 	if err != nil {
 		return eth.BlockID{}, eth.BlockID{}, err
 	}
-	cb := ChainBlock{c.chainID, &block}
-	l1 = c.randomChain.l1SourceMap[cb].ID()
+	// l1SourceMap is keyed by ChainBlock whose .block pointer came from
+	// chainBlocks[chain][i] (the slice's element address). Looking it up with
+	// a freshly-addressed local copy (&block) always misses and silently
+	// returns the zero value, leaving L1Inclusion zero in every fuzz run and
+	// keeping VerifiedBlockAtL1 unexercised. Find the original slice pointer
+	// by hash so the map key matches.
+	var matched *eth.L2BlockRef
+	for _, b := range c.randomChain.chainBlocks[c.chainID] {
+		if b.Hash == block.Hash {
+			matched = b
+			break
+		}
+	}
+	if matched == nil {
+		return eth.BlockID{}, eth.BlockID{}, ethereum.NotFound
+	}
+	l1 = c.randomChain.l1SourceMap[ChainBlock{c.chainID, matched}].ID()
 	return block.ID(), l1, nil
 }
 
