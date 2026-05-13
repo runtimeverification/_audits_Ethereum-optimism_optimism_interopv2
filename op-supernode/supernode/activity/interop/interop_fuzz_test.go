@@ -55,21 +55,30 @@ func FuzzVerifyInteropMessages(f *testing.F) {
 		requireLogsDBChainIntegrity(t, interop)
 		requireVerifiedDBChainIntegrity(t, interop)
 
-		if !randomChain.isInvalid {
-			require.NoError(t, err)
+		// Item #5: probe the public read API and confirm it agrees with the
+		// committed verifiedDB state. Runs regardless of validity.
+		assertVerifiedDBReadback(t, interop)
+
+		// Item #1a: the SUT must never commit past the injected invalidation.
+		// This is the high-frequency check; it works from verifiedDB state
+		// regardless of whether the harness's re-verify call can complete.
+		randomChain.assertProgressStoppedBeforeBug(t, interop)
+
+		// Item #1b: strict structured assertion against the re-verify result.
+		// Replaces the prior loose check `err != nil || !result.IsValid()`
+		// which silently accepted regressions returning the wrong error or
+		// invalidating the wrong chain. Fires only on the subset of seeds
+		// where verifyInteropMessages completes cleanly at safeTimestamp.
+		randomChain.assertExpectedResult(t, safeTimestamp, result, err)
+
+		// When the chain was not invalidated, the heads we observe must be
+		// the tips we generated.
+		if randomChain.invalidationKind == KindNone {
 			for chain, block := range result.L2Heads {
 				rcBlocks := randomChain.chainBlocks[chain]
 				lastBlock := rcBlocks[len(rcBlocks)-1]
 				require.Equal(t, block.Hash, lastBlock.Hash)
 			}
-
-			// P1: Valid messages never produce InvalidHeads
-			require.True(t, result.IsValid(), "P1: valid messages should produce valid result, got InvalidHeads: %v", result.InvalidHeads)
-
-			// P3: IsValid() ↔ len(InvalidHeads) == 0
-			require.Empty(t, result.InvalidHeads, "P3: InvalidHeads should be empty for valid result")
-		} else {
-			require.True(t, err != nil || !result.IsValid())
 		}
 
 		if err != nil {
