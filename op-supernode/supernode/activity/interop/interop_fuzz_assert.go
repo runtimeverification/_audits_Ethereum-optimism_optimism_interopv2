@@ -55,6 +55,19 @@ func (rc *RandomChain) assertExpectedResult(t *testing.T, tsVerified uint64, res
 		return
 	}
 
+	// Kinds that trigger DecisionWait/Rewind (e.g. KindL1Reorg) never reach
+	// verifyInteropMessages, so result.InvalidHeads stays empty. The harness
+	// signals this by leaving expectedInvalidChains empty; assert that the
+	// verify path agrees, and rely on assertProgressStoppedBeforeBug to
+	// catch the SUT's failure to halt.
+	if len(rc.expectedInvalidChains) == 0 {
+		require.Empty(t, result.InvalidHeads,
+			"kind=%s @ ts=%d (verified=%d): verify path expected no InvalidHeads but got %v",
+			rc.invalidationKind, rc.invalidationTimestamp, tsVerified,
+			sortedInvalidHeadIDs(result.InvalidHeads))
+		return
+	}
+
 	require.NotEmpty(t, result.InvalidHeads,
 		"kind=%s @ ts=%d (verified=%d): expected at least one InvalidHead but result is valid (predicted=%v, heads=%v)",
 		rc.invalidationKind, rc.invalidationTimestamp, tsVerified,
@@ -202,7 +215,6 @@ func assertVerifiedDBReadback(t *testing.T, interop *Interop) {
 	// at gotTS, its inclusion must satisfy <= l1Ref.Number, and gotTS must
 	// be within [firstTS, lastTS]. Catches regressions where the backward
 	// search returns inconsistent or out-of-range results.
-	maxInclusionNumber := uint64(0)
 	for ts := firstTS; ts <= lastTS; ts++ {
 		result, err := interop.verifiedDB.Get(ts)
 		if err != nil {
@@ -210,9 +222,6 @@ func assertVerifiedDBReadback(t *testing.T, interop *Interop) {
 		}
 		if result.L1Inclusion == (eth.BlockID{}) {
 			continue
-		}
-		if result.L1Inclusion.Number > maxInclusionNumber {
-			maxInclusionNumber = result.L1Inclusion.Number
 		}
 		l1Ref := eth.L1BlockRef{Hash: result.L1Inclusion.Hash, Number: result.L1Inclusion.Number}
 		for chainID := range result.L2Heads {
@@ -237,15 +246,12 @@ func assertVerifiedDBReadback(t *testing.T, interop *Interop) {
 		}
 	}
 
-	// CurrentL1.Number is the cap-at-min of every node's CurrentL1 (PR #19620),
-	// so it never exceeds the maximum L1 number observed in any committed
-	// L1Inclusion. Skip when no committed result carried an inclusion.
-	if maxInclusionNumber > 0 {
-		currentL1 := interop.CurrentL1()
-		require.LessOrEqual(t, currentL1.Number, maxInclusionNumber,
-			"CurrentL1.Number=%d must be <= max committed L1Inclusion.Number=%d (cap-at-min)",
-			currentL1.Number, maxInclusionNumber)
-	}
+	// CurrentL1 used to be asserted as <= max committed L1Inclusion (per the
+	// FUZZ_NEXT_PHASE.md write-up of PR #19620). That's not the real
+	// invariant: refreshCurrentL1OnWait (interop.go:481) sets currentL1 to
+	// the live node CurrentL1 unconditionally, so once the SUT enters
+	// DecisionWait it can hold a number above any committed L1Inclusion.
+	// No simple read-side invariant remains to assert here.
 }
 
 // sortedChainIDs renders a map keyed by ChainID for stable test output.
