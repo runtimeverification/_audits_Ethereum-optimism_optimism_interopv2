@@ -690,11 +690,62 @@ func (rc *RandomChain) InvalidExecMsgForLog(chain eth.ChainID, block eth.L2Block
 	}
 }
 
+// loopStart returns the L2 timestamp at which the SUT's progressAndRecord
+// loop will start. resolveFirstVerifiableTimestamp uses SyncStatus.SafeL2 =
+// blocks[1] per the mock, so the loop's first NextTimestamp is
+// minCrossSafeTime+1 = min over chains of (blocks[1].Time + 1).
+//
+// Block-targeted invalidation kinds (InvalidIdentifier, FutureDependency,
+// ExpiredMessage, SelfDependency, Cycle) must place the injected block at
+// Time >= loopStart, otherwise OptimisticAt may pick a later block in the
+// same chain at ts=loopStart and the SUT never sees the corruption — the
+// harness's invalidationTimestamp = block.Time would be unreachable and
+// assertProgressStoppedBeforeBug would false-fire.
+func (rc *RandomChain) loopStart() uint64 {
+	start := uint64(math.MaxUint64)
+	for _, chainID := range rc.chainIDs {
+		blocks := rc.chainBlocks[chainID]
+		if len(blocks) < 2 {
+			continue
+		}
+		t := blocks[1].Time + 1
+		if t < start {
+			start = t
+		}
+	}
+	return start
+}
+
+// pickReachableBlockIndex returns an index into rc.allBlocks chosen
+// uniformly at random from blocks at Time >= loopStart. Returns
+// (-1, false) when no such block exists (chains too short / pathological
+// random shape).
+//
+// All block-targeted Insert* methods route through here so the harness's
+// invalidationTimestamp lines up with what the SUT actually visits.
+func (rc *RandomChain) pickReachableBlockIndex(lo int) (int, bool) {
+	start := rc.loopStart()
+	candidates := make([]int, 0, len(rc.allBlocks))
+	for i := lo; i < len(rc.allBlocks); i++ {
+		if rc.allBlocks[i].block.Time >= start {
+			candidates = append(candidates, i)
+		}
+	}
+	if len(candidates) == 0 {
+		return -1, false
+	}
+	return candidates[rc.randomGenerator.Intn(len(candidates))], true
+}
+
 func (rc *RandomChain) InsertMessageWithInvalidIdentifier() {
 	r := rc.randomGenerator
 	mode := rc.randomInvalidIdentifierMode()
 
-	candidateIndex := randomInRange(r, len(rc.chainIDs), len(rc.allBlocks))
+	candidateIndex, ok := rc.pickReachableBlockIndex(len(rc.chainIDs))
+	if !ok {
+		rc.t.Logf("InsertMessageWithInvalidIdentifier: no candidate at or after loopStart; skipping")
+		return
+	}
 	candidateBlock := rc.allBlocks[candidateIndex]
 
 	// Case 5 (wrong-checksum) is the only sub-mode that targets the
@@ -753,7 +804,21 @@ func (rc *RandomChain) InsertFutureDependency() {
 	for i := len(rc.allBlocks)-1; rc.allBlocks[i].block.Time == latestTimestamp; i-- {
 		latestPossibleIndex = i
 	}
-	candidateIndex := randomInRange(r, len(rc.chainIDs), latestPossibleIndex)
+	// Candidate must satisfy both: there's a strictly future block in
+	// allBlocks (i.e., not in the last-timestamp set) AND Time >= loopStart
+	// so the SUT actually visits it (see loopStart docstring).
+	start := rc.loopStart()
+	candidates := make([]int, 0, latestPossibleIndex)
+	for i := len(rc.chainIDs); i < latestPossibleIndex; i++ {
+		if rc.allBlocks[i].block.Time >= start {
+			candidates = append(candidates, i)
+		}
+	}
+	if len(candidates) == 0 {
+		t.Logf("InsertFutureDependency: no candidate at or after loopStart=%d with a strictly future block; skipping", start)
+		return
+	}
+	candidateIndex := candidates[r.Intn(len(candidates))]
 	candidateBlock := rc.allBlocks[candidateIndex]
 	t.Logf("Inserting a future dependency in candidate (%s, %2d)'s hazard set", candidateBlock.chain, candidateBlock.block.Number)
 
@@ -791,17 +856,20 @@ func (rc *RandomChain) InsertExpiredMessage(expiryWindow uint64) {
 	t := rc.t
 
 	// Walk back from the chain's last block to find an executing candidate
-	// whose time strictly exceeds expiryWindow (otherwise no initiating block
-	// could sit > expiryWindow earlier).
+	// whose time strictly exceeds expiryWindow (so an initiating block can
+	// sit > expiryWindow earlier) AND is at Time >= loopStart (so the SUT
+	// actually visits it; otherwise OptimisticAt picks a later block in the
+	// same chain and the bad exec msg is never verified).
+	start := rc.loopStart()
 	candidateIndex := -1
 	for i := len(rc.allBlocks) - 1; i >= len(rc.chainIDs); i-- {
-		if rc.allBlocks[i].block.Time > expiryWindow+1 {
+		if rc.allBlocks[i].block.Time > expiryWindow+1 && rc.allBlocks[i].block.Time >= start {
 			candidateIndex = i
 			break
 		}
 	}
 	if candidateIndex == -1 {
-		t.Logf("InsertExpiredMessage: chain too short for window=%d, skipping", expiryWindow)
+		t.Logf("InsertExpiredMessage: no candidate at or after loopStart=%d with time>expiryWindow=%d; skipping", start, expiryWindow)
 		return
 	}
 	candidateBlock := rc.allBlocks[candidateIndex]
@@ -848,7 +916,11 @@ func (rc *RandomChain) InsertExpiredMessage(expiryWindow uint64) {
 
 func (rc *RandomChain) InsertSelfDependency() {
 	r := rc.randomGenerator
-	candidateIndex := randomInRange(r, len(rc.chainIDs), len(rc.allBlocks))
+	candidateIndex, ok := rc.pickReachableBlockIndex(len(rc.chainIDs))
+	if !ok {
+		rc.t.Logf("InsertSelfDependency: no candidate at or after loopStart; skipping")
+		return
+	}
 	candidate := rc.allBlocks[candidateIndex]
 
 	// Create a random initiating message to be inserted at index N+1
@@ -872,8 +944,23 @@ func (rc *RandomChain) CreateCycle() {
 		rc.t.Logf("CreateCycle: No set of blocks with the same timestamp exists. No cycle created")
 		return
 	}
-	i := rc.randomGenerator.Intn(len(sameTimeStampSets))
-	set := sameTimeStampSets[i]
+	// Filter to sets whose timestamp is at or above loopStart; otherwise the
+	// SUT's verifyCycleMessages never runs on the cycle's same-ts blocks
+	// (OptimisticAt picks later blocks in those chains), and the harness's
+	// invalidationTimestamp = set[0].block.Time would be unreachable.
+	start := rc.loopStart()
+	reachable := make([][]ChainBlock, 0, len(sameTimeStampSets))
+	for _, s := range sameTimeStampSets {
+		if len(s) > 0 && s[0].block.Time >= start {
+			reachable = append(reachable, s)
+		}
+	}
+	if len(reachable) == 0 {
+		rc.t.Logf("CreateCycle: no same-timestamp set at or after loopStart=%d; skipping", start)
+		return
+	}
+	i := rc.randomGenerator.Intn(len(reachable))
+	set := reachable[i]
 	firstLog := rc.addRandomLog(set[0])
 	rc.addRandomLog(set[0])
 	for i, cb := range set[:len(set)-1] {
