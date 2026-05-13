@@ -46,6 +46,35 @@ type ChainBlock struct {
 	block *eth.L2BlockRef
 }
 
+// InvalidationKind identifies how a RandomChain was invalidated, so the harness
+// can predict which chains the SUT should report as invalid.
+type InvalidationKind int
+
+const (
+	KindNone InvalidationKind = iota
+	KindCycle
+	KindSelfDependency
+	KindInvalidIdentifier
+	KindFutureDependency
+)
+
+func (k InvalidationKind) String() string {
+	switch k {
+	case KindNone:
+		return "None"
+	case KindCycle:
+		return "Cycle"
+	case KindSelfDependency:
+		return "SelfDependency"
+	case KindInvalidIdentifier:
+		return "InvalidIdentifier"
+	case KindFutureDependency:
+		return "FutureDependency"
+	default:
+		return "Unknown"
+	}
+}
+
 type RandomChainParams struct {
 	chainCount int
 
@@ -77,6 +106,20 @@ type RandomChain struct {
 	receipts      map[eth.ChainID]map[eth.BlockID]types2.Receipts
 	blockTimes    map[eth.ChainID]int
 	isInvalid     bool
+
+	// invalidationKind records which Invalidate sub-routine successfully ran.
+	// KindNone (the zero value) means the chain is expected to verify cleanly.
+	invalidationKind InvalidationKind
+
+	// expectedInvalidChains is the set of chains the harness predicts the SUT
+	// should report in result.InvalidHeads when verifying the timestamp at
+	// which the invalidation lives. Populated only when invalidationKind != KindNone.
+	expectedInvalidChains map[eth.ChainID]bool
+
+	// invalidationTimestamp is the L2 timestamp where the injected invalidation
+	// lives. Used by the harness to decide whether the SUT actually got far
+	// enough to observe it.
+	invalidationTimestamp uint64
 }
 
 var _ cc.ChainContainer = RandomChainContainer{}
@@ -300,9 +343,11 @@ func (p *RandomChainParams) MakeRandomChain(t *testing.T, seed int64) (res Rando
 		chainBlocks:   make(map[eth.ChainID][]*eth.L2BlockRef),
 		l1SourceMap:   make(map[ChainBlock]eth.BlockRef),
 		l1Source:      make(map[uint64]eth.BlockRef),
-		receipts:      make(map[eth.ChainID]map[eth.BlockID]types2.Receipts),
-		blockTimes:    make(map[eth.ChainID]int),
-		isInvalid:     false,
+		receipts:              make(map[eth.ChainID]map[eth.BlockID]types2.Receipts),
+		blockTimes:            make(map[eth.ChainID]int),
+		isInvalid:             false,
+		invalidationKind:      KindNone,
+		expectedInvalidChains: make(map[eth.ChainID]bool),
 	}
 
 	for i := range p.chainCount {
@@ -360,9 +405,12 @@ func (p *RandomChainParams) MakeRandomChain(t *testing.T, seed int64) (res Rando
 		}
 	}
 
+	// Only mark the chain as invalid if Invalidate() actually applied an
+	// invalidation. Sub-routines may bail out (e.g. CreateCycle when no
+	// same-timestamp set exists), in which case the chain stays valid.
 	if r.Intn(100) < p.invalidateChance {
-		res.isInvalid = true
 		res.Invalidate()
+		res.isInvalid = res.invalidationKind != KindNone
 	}
 
 	//
@@ -497,10 +545,17 @@ func (rc *RandomChain) InsertMessageWithInvalidIdentifier() {
 	randomIndex := randomInRange(r, len(rc.chainIDs), len(rc.allBlocks))
 	candidateBlock := rc.allBlocks[candidateIndex]
 	randomBlock := rc.allBlocks[randomIndex]
+	if len(rc.generatedLogs[randomBlock]) == 0 {
+		return
+	}
 	randomLogIndex := r.Intn(len(rc.generatedLogs[randomBlock]))
 	randomLog := rc.generatedLogs[randomBlock][randomLogIndex]
 
 	rc.addInvalidExecutingMessage(candidateBlock, randomBlock, randomLog)
+
+	rc.invalidationKind = KindInvalidIdentifier
+	rc.invalidationTimestamp = candidateBlock.block.Time
+	rc.expectedInvalidChains[candidateBlock.chain] = true
 }
 
 func (rc *RandomChain) Invalidate() {
@@ -546,6 +601,10 @@ func (rc *RandomChain) InsertFutureDependency() {
 	futureBlock := rc.allBlocks[futureIndex]
 	initiatingLog := rc.addRandomLog(futureBlock)
 	rc.addExecutingMessageWithDependency(candidateBlock, futureBlock, initiatingLog)
+
+	rc.invalidationKind = KindFutureDependency
+	rc.invalidationTimestamp = candidateBlock.block.Time
+	rc.expectedInvalidChains[candidateBlock.chain] = true
 }
 
 func (rc *RandomChain) InsertSelfDependency() {
@@ -562,6 +621,10 @@ func (rc *RandomChain) InsertSelfDependency() {
 
 	// Insert initiating message at index N+1
 	rc.generatedLogs[candidate] = append(rc.generatedLogs[candidate], initiatingLog)
+
+	rc.invalidationKind = KindSelfDependency
+	rc.invalidationTimestamp = candidate.block.Time
+	rc.expectedInvalidChains[candidate.chain] = true
 }
 
 func (rc *RandomChain) CreateCycle() {
@@ -590,4 +653,10 @@ func (rc *RandomChain) CreateCycle() {
 	execLog.Index = firstLog.Index
 	*firstLog = *execLog
 	rc.dependencies[execcb] = append(rc.dependencies[execcb], cb)
+
+	rc.invalidationKind = KindCycle
+	rc.invalidationTimestamp = set[0].block.Time
+	for _, p := range set {
+		rc.expectedInvalidChains[p.chain] = true
+	}
 }
