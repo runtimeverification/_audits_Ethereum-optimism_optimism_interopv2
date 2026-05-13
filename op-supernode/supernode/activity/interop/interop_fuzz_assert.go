@@ -192,6 +192,60 @@ func assertVerifiedDBReadback(t *testing.T, interop *Interop) {
 				"VerifiedBlockAtL1(%s).ts mismatch", chainID)
 		}
 	}
+
+	// Item #5 follow-on: probe VerifiedBlockAtL1 across every committed
+	// L1Inclusion, not just the most recent one. VerifiedBlockAtL1 returns
+	// the *latest* committed (head, ts) whose L1Inclusion.Number <= the
+	// queried L1 — so we can't compare against the L2 head at the specific
+	// committed ts we're querying. The right invariant is internal
+	// consistency: the returned (gotHead, gotTS) must match what's stored
+	// at gotTS, its inclusion must satisfy <= l1Ref.Number, and gotTS must
+	// be within [firstTS, lastTS]. Catches regressions where the backward
+	// search returns inconsistent or out-of-range results.
+	maxInclusionNumber := uint64(0)
+	for ts := firstTS; ts <= lastTS; ts++ {
+		result, err := interop.verifiedDB.Get(ts)
+		if err != nil {
+			continue
+		}
+		if result.L1Inclusion == (eth.BlockID{}) {
+			continue
+		}
+		if result.L1Inclusion.Number > maxInclusionNumber {
+			maxInclusionNumber = result.L1Inclusion.Number
+		}
+		l1Ref := eth.L1BlockRef{Hash: result.L1Inclusion.Hash, Number: result.L1Inclusion.Number}
+		for chainID := range result.L2Heads {
+			gotHead, gotTS := interop.VerifiedBlockAtL1(chainID, l1Ref)
+			if (gotHead == eth.BlockID{}) && gotTS == 0 {
+				continue // nothing committed at or below this L1; no contract violation
+			}
+			require.GreaterOrEqual(t, gotTS, firstTS,
+				"VerifiedBlockAtL1(%s, L1=%d).ts=%d must be >= firstTS=%d",
+				chainID, l1Ref.Number, gotTS, firstTS)
+			require.LessOrEqual(t, gotTS, lastTS,
+				"VerifiedBlockAtL1(%s, L1=%d).ts=%d must not exceed lastTS=%d",
+				chainID, l1Ref.Number, gotTS, lastTS)
+			gotResult, err := interop.verifiedDB.Get(gotTS)
+			require.NoError(t, err, "verifiedDB.Get(VerifiedBlockAtL1 returned ts=%d)", gotTS)
+			require.LessOrEqual(t, gotResult.L1Inclusion.Number, l1Ref.Number,
+				"VerifiedBlockAtL1(%s, L1=%d) returned ts=%d with L1Inclusion=%d > queried",
+				chainID, l1Ref.Number, gotTS, gotResult.L1Inclusion.Number)
+			require.Equal(t, gotResult.L2Heads[chainID], gotHead,
+				"VerifiedBlockAtL1(%s, L1=%d) head=%v does not match stored L2Heads at gotTS=%d",
+				chainID, l1Ref.Number, gotHead, gotTS)
+		}
+	}
+
+	// CurrentL1.Number is the cap-at-min of every node's CurrentL1 (PR #19620),
+	// so it never exceeds the maximum L1 number observed in any committed
+	// L1Inclusion. Skip when no committed result carried an inclusion.
+	if maxInclusionNumber > 0 {
+		currentL1 := interop.CurrentL1()
+		require.LessOrEqual(t, currentL1.Number, maxInclusionNumber,
+			"CurrentL1.Number=%d must be <= max committed L1Inclusion.Number=%d (cap-at-min)",
+			currentL1.Number, maxInclusionNumber)
+	}
 }
 
 // sortedChainIDs renders a map keyed by ChainID for stable test output.
