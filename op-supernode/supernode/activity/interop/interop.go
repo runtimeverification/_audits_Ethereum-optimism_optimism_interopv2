@@ -131,6 +131,23 @@ type StepOutput struct {
 	Result   Result
 }
 
+// verifiedStore is the subset of VerifiedDB's public surface that Interop's
+// main loop and read API rely on. Defining it as an interface lets tests
+// swap a wrapping decorator (e.g. a WAL-crash injector) in place of the
+// production *VerifiedDB without touching the constructor signature.
+type verifiedStore interface {
+	Commit(result VerifiedResult) error
+	Get(ts uint64) (VerifiedResult, error)
+	Has(ts uint64) (bool, error)
+	FirstTimestamp() (uint64, bool)
+	LastTimestamp() (uint64, bool)
+	Rewind(timestamp uint64) (bool, error)
+	SetPendingTransition(pending PendingTransition) error
+	GetPendingTransition() (*PendingTransition, error)
+	ClearPendingTransition() error
+	Close() error
+}
+
 // Interop is a VerificationActivity that can also run background work as a RunnableActivity.
 type Interop struct {
 	log                 log.Logger
@@ -149,7 +166,7 @@ type Interop struct {
 
 	messageExpiryWindow uint64
 
-	verifiedDB *VerifiedDB
+	verifiedDB verifiedStore
 	logsDBs    map[eth.ChainID]LogsDB
 
 	mu      sync.RWMutex
