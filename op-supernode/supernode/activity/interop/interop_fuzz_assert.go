@@ -129,9 +129,14 @@ func assertVerifiedDBReadback(t *testing.T, interop *Interop) {
 		}
 		return
 	}
+	firstTS, ok := interop.verifiedDB.FirstTimestamp()
+	require.True(t, ok, "verifiedDB.FirstTimestamp must be set when LastTimestamp is")
 
 	// Every committed timestamp should report as verified, and Has should agree.
-	for ts := interop.activationTimestamp; ts <= lastTS; ts++ {
+	// The committed range is [firstTS, lastTS]; verifiedDB.Has returns false
+	// for any ts below firstTS (handoff/pre-verification gap), so the strict
+	// read-back loop runs over the committed range only.
+	for ts := firstTS; ts <= lastTS; ts++ {
 		verified, err := interop.VerifiedAtTimestamp(ts)
 		require.NoError(t, err, "VerifiedAtTimestamp(%d)", ts)
 		require.True(t, verified, "VerifiedAtTimestamp(%d) should be true (lastTS=%d)", ts, lastTS)
@@ -139,6 +144,14 @@ func assertVerifiedDBReadback(t *testing.T, interop *Interop) {
 		has, err := interop.verifiedDB.Has(ts)
 		require.NoError(t, err, "verifiedDB.Has(%d)", ts)
 		require.True(t, has, "verifiedDB.Has(%d) should be true (lastTS=%d)", ts, lastTS)
+	}
+
+	// Timestamps in [activationTimestamp, firstTS) are covered by the safe-head
+	// handoff: VerifiedAtTimestamp must return true even though Has is false.
+	for ts := interop.activationTimestamp; ts < firstTS; ts++ {
+		verified, err := interop.VerifiedAtTimestamp(ts)
+		require.NoError(t, err, "VerifiedAtTimestamp(%d) (handoff range)", ts)
+		require.True(t, verified, "VerifiedAtTimestamp(%d) should be true via handoff (firstTS=%d)", ts, firstTS)
 	}
 
 	// Pre-activation timestamps are considered verified by contract

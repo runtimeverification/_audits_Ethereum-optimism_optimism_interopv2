@@ -24,11 +24,20 @@ func requireVerifiedDBChainIntegrity(t *testing.T, interop *Interop) {
 	if !ok {
 		return // VerifiedDB is empty; nothing to check
 	}
-	activationTimestamp := interop.activationTimestamp
+	// Anchor on the actual first committed timestamp, not activationTimestamp.
+	// The main loop now starts at resolveFirstVerifiableTimestamp(=minCrossSafeTime+1)
+	// which is normally above activationTimestamp, so there is no commit at
+	// activationTimestamp itself.
+	firstTimestamp, ok := interop.verifiedDB.FirstTimestamp()
+	if !ok {
+		// LastTimestamp said the DB had data; FirstTimestamp disagreeing would
+		// be a SUT invariant violation, not just a missing-commit edge case.
+		require.FailNow(t, "verifiedDB.LastTimestamp reports data but FirstTimestamp does not")
+	}
 
 	// --- Invariant 1: L2 heads advance by at most one block per timestamp ---
 	var prevResult *VerifiedResult
-	for ts := activationTimestamp; ts <= lastTimestamp; ts++ {
+	for ts := firstTimestamp; ts <= lastTimestamp; ts++ {
 		result, err := interop.verifiedDB.Get(ts)
 		if err != nil {
 			// Sequential commit guarantee means this should not happen, but if it
@@ -58,8 +67,8 @@ func requireVerifiedDBChainIntegrity(t *testing.T, interop *Interop) {
 	}
 
 	// --- Invariant 2: first and last L2 heads are anchored in the LogsDB ---
-	firstResult, err := interop.verifiedDB.Get(activationTimestamp)
-	require.NoError(t, err, "verifiedDB.Get(activationTimestamp=%d)", activationTimestamp)
+	firstResult, err := interop.verifiedDB.Get(firstTimestamp)
+	require.NoError(t, err, "verifiedDB.Get(firstTimestamp=%d)", firstTimestamp)
 
 	lastResult, err := interop.verifiedDB.Get(lastTimestamp)
 	require.NoError(t, err, "verifiedDB.Get(lastTimestamp=%d)", lastTimestamp)
@@ -68,11 +77,11 @@ func requireVerifiedDBChainIntegrity(t *testing.T, interop *Interop) {
 		if firstHead, exists := firstResult.L2Heads[chainID]; exists {
 			seal, err := db.FindSealedBlock(firstHead.Number)
 			require.NoError(t, err,
-				"chain %s: FindSealedBlock(%d) for activationTimestamp %d",
-				chainID, firstHead.Number, activationTimestamp)
+				"chain %s: FindSealedBlock(%d) for firstTimestamp %d",
+				chainID, firstHead.Number, firstTimestamp)
 			require.Equal(t, firstHead.Hash, seal.Hash,
-				"chain %s: LogsDB block hash at number %d does not match VerifiedDB L2 head for activationTimestamp %d",
-				chainID, firstHead.Number, activationTimestamp)
+				"chain %s: LogsDB block hash at number %d does not match VerifiedDB L2 head for firstTimestamp %d",
+				chainID, firstHead.Number, firstTimestamp)
 		}
 
 		if lastHead, exists := lastResult.L2Heads[chainID]; exists {
@@ -89,7 +98,12 @@ func requireVerifiedDBChainIntegrity(t *testing.T, interop *Interop) {
 
 // requireLogsDBChainIntegrity asserts that every LogsDB in interop forms a valid
 // chain: block numbers are sequential (+1 each step), parent hashes link to the
-// previous block's hash, and timestamps strictly increase by blockTime.
+// previous block's hash, and timestamps are monotonically non-decreasing.
+//
+// Timestamps cannot be required to increase by exactly blockTime: upstream's
+// frontier-view sealing skips L2 timestamps that have no new sealed block on
+// some chain, so sealed-block runs legitimately have gaps. The sequential
+// block-number and parent-hash linkage invariants remain enforced.
 func requireLogsDBChainIntegrity(t *testing.T, interop *Interop) {
 	t.Helper()
 	for chainID, db := range interop.logsDBs {
@@ -107,8 +121,9 @@ func requireLogsDBChainIntegrity(t *testing.T, interop *Interop) {
 			require.NoError(t, err, "chain %s: FindSealedBlock(%d)", chainID, num)
 
 			if num > first.Number {
-				blockTime := interop.chains[chainID].BlockTime()
-				require.Equal(t, seal.Timestamp, prev.Timestamp+blockTime, "chain %s: block %d: timestamp must be %d", chainID, num, prev.Timestamp+blockTime)
+				require.GreaterOrEqual(t, seal.Timestamp, prev.Timestamp,
+					"chain %s: block %d: timestamp must be non-decreasing (prev=%d, got=%d)",
+					chainID, num, prev.Timestamp, seal.Timestamp)
 
 				require.Equal(t, prev.Number+1, seal.Number,
 					"chain %s: block %d: expected sequential block number", chainID, num)
