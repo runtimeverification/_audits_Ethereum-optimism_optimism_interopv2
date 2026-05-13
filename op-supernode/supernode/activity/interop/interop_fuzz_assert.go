@@ -43,7 +43,7 @@ func (rc *RandomChain) assertExpectedResult(t *testing.T, tsVerified uint64, res
 
 	if rc.invalidationKind == KindNone {
 		require.Empty(t, result.InvalidHeads,
-			"kind=None: expected no invalid heads, got %v", sortedChainIDs(result.InvalidHeads))
+			"kind=None: expected no invalid heads, got %v", sortedInvalidHeadIDs(result.InvalidHeads))
 		require.True(t, result.IsValid(), "kind=None: result.IsValid() must be true")
 		return
 	}
@@ -71,7 +71,7 @@ func (rc *RandomChain) assertExpectedResult(t *testing.T, tsVerified uint64, res
 		require.True(t, marked,
 			"kind=%s @ ts=%d: predicted chain %s should be in InvalidHeads, got %v",
 			rc.invalidationKind, rc.invalidationTimestamp, chainID,
-			sortedChainIDs(result.InvalidHeads))
+			sortedInvalidHeadIDs(result.InvalidHeads))
 	}
 
 	// Actual ⊆ Predicted: any chain the SUT reports invalid must have been
@@ -81,7 +81,7 @@ func (rc *RandomChain) assertExpectedResult(t *testing.T, tsVerified uint64, res
 			"kind=%s @ ts=%d: SUT marked chain %s invalid but harness did not predict it (predicted=%v, actual=%v)",
 			rc.invalidationKind, rc.invalidationTimestamp, chainID,
 			sortedChainIDSet(rc.expectedInvalidChains),
-			sortedChainIDs(result.InvalidHeads))
+			sortedInvalidHeadIDs(result.InvalidHeads))
 	}
 }
 
@@ -183,6 +183,19 @@ func assertVerifiedDBReadback(t *testing.T, interop *Interop) {
 
 // sortedChainIDs renders a map keyed by ChainID for stable test output.
 func sortedChainIDs(m map[eth.ChainID]eth.BlockID) []string {
+	out := make([]string, 0, len(m))
+	for id := range m {
+		out = append(out, id.String())
+	}
+	sort.Strings(out)
+	return out
+}
+
+// sortedInvalidHeadIDs is the InvalidHead-typed variant of sortedChainIDs,
+// post-upstream-merge: result.InvalidHeads is now map[eth.ChainID]InvalidHead
+// (with embedded BlockID + StateRoot + MessagePasserStorageRoot) instead of
+// map[eth.ChainID]eth.BlockID.
+func sortedInvalidHeadIDs(m map[eth.ChainID]InvalidHead) []string {
 	out := make([]string, 0, len(m))
 	for id := range m {
 		out = append(out, id.String())

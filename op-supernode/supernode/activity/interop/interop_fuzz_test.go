@@ -44,13 +44,20 @@ func FuzzVerifyInteropMessages(f *testing.F) {
 		safeTimestamp := i
 
 		blocksAtTimestamp := make(map[eth.ChainID]eth.BlockID)
+		l1HeadsAtTimestamp := make(map[eth.ChainID]eth.BlockID)
 		for chain, container := range fuzzInterop.mocks {
-			block, _, err := container.OptimisticAt(interop.ctx, safeTimestamp)
+			block, l1, err := container.OptimisticAt(interop.ctx, safeTimestamp)
 			require.NoError(t, err)
 			blocksAtTimestamp[chain] = block
+			l1HeadsAtTimestamp[chain] = l1
 		}
 
-		result, err := interop.verifyInteropMessages(safeTimestamp, blocksAtTimestamp)
+		// verifyInteropMessages upstream takes (ts, blocks, l1Heads, view). The
+		// frontier view is built once per round in verify(); we replicate that
+		// shape so the re-verify call exercises the same SUT path.
+		view, viewErr := interop.resolveFrontierVerificationView(blocksAtTimestamp)
+		require.NoError(t, viewErr)
+		result, err := interop.verifyInteropMessages(safeTimestamp, blocksAtTimestamp, l1HeadsAtTimestamp, view)
 
 		requireLogsDBChainIntegrity(t, interop)
 		requireVerifiedDBChainIntegrity(t, interop)
@@ -71,13 +78,20 @@ func FuzzVerifyInteropMessages(f *testing.F) {
 		// where verifyInteropMessages completes cleanly at safeTimestamp.
 		randomChain.assertExpectedResult(t, safeTimestamp, result, err)
 
-		// When the chain was not invalidated, the heads we observe must be
-		// the tips we generated.
+		// When the chain was not invalidated, the head we observe must be
+		// the tip we generated — but only for chains whose final block's
+		// time is at or before safeTimestamp. Chains advance at different
+		// block times, so safeTimestamp may land before some chain's tip
+		// and the SUT correctly returns an earlier block in that case.
 		if randomChain.invalidationKind == KindNone {
-			for chain, block := range result.L2Heads {
-				rcBlocks := randomChain.chainBlocks[chain]
+			for chainID, block := range result.L2Heads {
+				rcBlocks := randomChain.chainBlocks[chainID]
 				lastBlock := rcBlocks[len(rcBlocks)-1]
-				require.Equal(t, block.Hash, lastBlock.Hash)
+				if safeTimestamp >= lastBlock.Time {
+					require.Equal(t, lastBlock.Hash, block.Hash,
+						"chain %s: L2Heads[%s].Hash at safeTimestamp=%d should match the chain's last block (Number=%d, Time=%d)",
+						chainID, chainID, safeTimestamp, lastBlock.Number, lastBlock.Time)
+				}
 			}
 		}
 
@@ -97,7 +111,7 @@ type interopFuzzHarness struct {
 	params         RandomChainParams
 	seed           int64
 	randomChain    RandomChain
-	mocks          map[eth.ChainID]cc.ChainContainer
+	mocks          map[eth.ChainID]cc.InteropChain
 	activationTime uint64
 	dataDir        string
 	skipBuild      bool // for tests that need custom construction
@@ -109,7 +123,7 @@ func newInteropFuzzHarness(t *testing.T) *interopFuzzHarness {
 	t.Parallel()
 	return &interopFuzzHarness{
 		t:              t,
-		mocks:          make(map[eth.ChainID]cc.ChainContainer),
+		mocks:          make(map[eth.ChainID]cc.InteropChain),
 		dataDir:        t.TempDir(),
 	}
 }
@@ -168,7 +182,9 @@ func (h *interopFuzzHarness) Build() *interopFuzzHarness {
 
 	h.mocks = h.randomChain.GetContainers()
 	logger := gethlog.NewLogger(gethlog.NewTerminalHandler(testWriter{h.t}, true))
-	h.interop = New(logger, h.activationTime, h.mocks, h.dataDir, h.randomChain)
+	// messageExpiryWindow=0 → upstream defaultMessageExpiryWindow (604800s).
+	// logBackfillDepth=0 and metrics=nil match upstream's defaults; New() substitutes a noop metrics impl.
+	h.interop = New(logger, h.activationTime, 0, h.mocks, h.dataDir, h.randomChain, 0, nil)
 	if h.interop != nil {
 		h.interop.ctx = context.Background()
 		h.t.Cleanup(func() { _ = h.interop.Stop(context.Background()) })
@@ -177,14 +193,14 @@ func (h *interopFuzzHarness) Build() *interopFuzzHarness {
 }
 
 // Chains returns the map of chain containers for use with New().
-func (h *interopFuzzHarness) Chains() map[eth.ChainID]cc.ChainContainer {
-	chains := make(map[eth.ChainID]cc.ChainContainer)
+func (h *interopFuzzHarness) Chains() map[eth.ChainID]cc.InteropChain {
+	chains := make(map[eth.ChainID]cc.InteropChain)
 	maps.Copy(chains, h.mocks)
 	return chains
 }
 
 // Mock returns the mock for a given chain ID.
-func (h *interopFuzzHarness) Mock(id uint64) cc.ChainContainer {
+func (h *interopFuzzHarness) Mock(id uint64) cc.InteropChain {
 	return h.mocks[eth.ChainIDFromUInt64(id)]
 }
 

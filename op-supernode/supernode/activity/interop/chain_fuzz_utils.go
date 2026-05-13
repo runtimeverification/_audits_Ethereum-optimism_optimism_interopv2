@@ -122,7 +122,7 @@ type RandomChain struct {
 	invalidationTimestamp uint64
 }
 
-var _ cc.ChainContainer = RandomChainContainer{}
+var _ cc.InteropChain = RandomChainContainer{}
 
 type RandomChainContainer struct {
 	chainID            eth.ChainID
@@ -163,11 +163,6 @@ func (c RandomChainContainer) SyncStatus(ctx context.Context) (*eth.SyncStatus, 
 	return &eth.SyncStatus{CurrentL1: l1Origin}, nil
 }
 
-func (c RandomChainContainer) VerifiedAt(ctx context.Context, ts uint64) (l2, l1 eth.BlockID, err error) {
-	//TODO
-	return eth.BlockID{}, eth.BlockID{}, nil
-}
-
 func (c RandomChainContainer) OptimisticAt(ctx context.Context, ts uint64) (l2, l1 eth.BlockID, err error) {
 	//TODO
 	block, err := c.LocalSafeBlockAtTimestamp(ctx, ts)
@@ -179,14 +174,48 @@ func (c RandomChainContainer) OptimisticAt(ctx context.Context, ts uint64) (l2, 
 	return block.ID(), l1, nil
 }
 
-func (c RandomChainContainer) OutputRootAtL2BlockNumber(ctx context.Context, l2BlockNum uint64) (eth.Bytes32, error) {
+func (c RandomChainContainer) TimestampToBlockNumber(ctx context.Context, ts uint64) (uint64, error) {
+	//TODO
+	block, err := c.LocalSafeBlockAtTimestamp(ctx, ts)
+	if err != nil {
+		return 0, err
+	}
+	return block.Number, nil
+}
+
+func (c RandomChainContainer) BlockNumberToTimestamp(ctx context.Context, blocknum uint64) (uint64, error) {
+	//TODO
+	for _, block := range c.randomChain.chainBlocks[c.chainID] {
+		if block.Number == blocknum {
+			return block.Time, nil
+		}
+	}
+	return 0, ethereum.NotFound
+}
+
+func (c RandomChainContainer) OutputRootAtL2BlockHash(ctx context.Context, blockHash common.Hash) (eth.Bytes32, error) {
 	//TODO
 	return eth.Bytes32{}, nil
 }
 
-func (c RandomChainContainer) OptimisticOutputAtTimestamp(ctx context.Context, ts uint64) (*eth.OutputResponse, error) {
+func (c RandomChainContainer) OptimisticOutputAtTimestamp(ctx context.Context, ts uint64) (*eth.OutputV0, error) {
 	//TODO
 	return nil, nil
+}
+
+func (c RandomChainContainer) GetDeniedOutput(height uint64, payloadHash common.Hash) (*eth.OutputV0, error) {
+	//TODO
+	return nil, nil
+}
+
+func (c RandomChainContainer) OutputV0AtBlockNumber(ctx context.Context, l2BlockNum uint64) (*eth.OutputV0, error) {
+	//TODO
+	return nil, nil
+}
+
+func (c RandomChainContainer) HasDeniedAtOrAfterTimestamp(timestamp uint64) (bool, error) {
+	//TODO
+	return false, nil
 }
 
 func (c RandomChainContainer) RewindEngine(ctx context.Context, timestamp uint64, invalidatedBlock eth.BlockRef) error {
@@ -215,7 +244,7 @@ func (c RandomChainContainer) BlockTime() uint64 {
 	return uint64(c.randomChain.blockTimes[c.chainID])
 }
 
-func (c RandomChainContainer) InvalidateBlock(ctx context.Context, height uint64, payloadHash common.Hash, decisionTimestamp uint64) (bool, error) {
+func (c RandomChainContainer) InvalidateBlock(ctx context.Context, height uint64, payloadHash common.Hash, decisionTimestamp uint64, stateRoot, messagePasserStorageRoot eth.Bytes32) (bool, error) {
 	//TODO
 	return true, nil
 }
@@ -234,8 +263,8 @@ func (c RandomChainContainer) SetResetCallback(cb cc.ResetCallback) {
 	//TODO
 }
 
-func (rc *RandomChain) GetContainers() (map[eth.ChainID]cc.ChainContainer) {
-	chains := make(map[eth.ChainID]cc.ChainContainer);
+func (rc *RandomChain) GetContainers() (map[eth.ChainID]cc.InteropChain) {
+	chains := make(map[eth.ChainID]cc.InteropChain);
 	for _, chain := range rc.chainIDs {
 		container := RandomChainContainer {
 			chainID:     chain,
