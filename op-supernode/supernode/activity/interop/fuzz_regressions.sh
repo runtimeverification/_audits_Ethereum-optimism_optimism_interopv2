@@ -127,7 +127,7 @@ inject_and_check() {
     return 0
 }
 
-ALL_NAMES=(expiry frontier-checksum verified-block-at-l1 same-l1-chain commit-idempotent)
+ALL_NAMES=(expiry frontier-checksum verified-block-at-l1 same-l1-chain commit-idempotent pending-transition-shape)
 SELECTED=("${@:-${ALL_NAMES[@]}}")
 FAILED=()
 
@@ -137,6 +137,7 @@ require_match verification_view.go -F 'seal, ok := block.contains[frontierQueryK
 require_match interop.go -F 'func (i *Interop) VerifiedBlockAtL1(chainID eth.ChainID, l1Block eth.L1BlockRef) (eth.BlockID, uint64) {'
 require_match checker.go -F 'func (c *l1ByNumberChecker) SameL1Chain(ctx context.Context, heads []eth.BlockID) (bool, error) {'
 require_match verified_db.go -F 'if reflect.DeepEqual(existing, result) {'
+require_match verified_db.go -F 'func (v *VerifiedDB) SetPendingTransition(pending PendingTransition) error {'
 require_match chain_fuzz_utils.go -F 'mode := rc.randomInvalidIdentifierMode()'
 
 for name in "${SELECTED[@]}"; do
@@ -214,6 +215,17 @@ for name in "${SELECTED[@]}"; do
             '/if reflect\.DeepEqual(existing, result) {/,/^[[:space:]]*}$/c\
 \			_ = reflect.DeepEqual\
 \			return fmt.Errorf("%w: %d", ErrAlreadyCommitted, ts)' \
+            || FAILED+=("$name")
+        ;;
+    pending-transition-shape)
+        # Corrupt SetPendingTransition to drop the Result/Rewind payload
+        # before persisting. The on-disk entry then has Decision != Wait
+        # but nil Result/Rewind, which assertPendingTransitionShape in
+        # the crash-recover target should flag.
+        inject_and_check pending-transition-shape verified_db.go FuzzVerifyInteropMessagesCrashRecover 1 \
+            '/^func (v \*VerifiedDB) SetPendingTransition(pending PendingTransition) error {/a\
+\	pending.Result = nil\
+\	pending.Rewind = nil' \
             || FAILED+=("$name")
         ;;
     *)
