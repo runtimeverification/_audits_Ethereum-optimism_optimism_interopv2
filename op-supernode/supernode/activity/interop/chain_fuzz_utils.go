@@ -582,8 +582,8 @@ func (rc *RandomChain) addExecutingMessageWithDependency(execcb ChainBlock, init
 	rc.dependencies[execcb] = append(rc.dependencies[execcb], initcb)
 }
 
-func (rc *RandomChain) addInvalidExecutingMessage(execcb ChainBlock, initcb ChainBlock, initiatingLog *types2.Log) {
-	execLog := rc.InvalidExecMsgForLog(initcb.chain, *initcb.block, initiatingLog)
+func (rc *RandomChain) addInvalidExecutingMessage(execcb ChainBlock, initcb ChainBlock, initiatingLog *types2.Log, mode int) {
+	execLog := rc.InvalidExecMsgForLog(initcb.chain, *initcb.block, initiatingLog, mode)
 	execLog.Index = uint(len(rc.generatedLogs[execcb]))
 	rc.generatedLogs[execcb] = append(rc.generatedLogs[execcb], execLog)
 }
@@ -604,7 +604,17 @@ func randomInRange(r *rand.Rand, lowerIncluding int, upperExcluding int) int {
 	return r.Intn(upperExcluding-lowerIncluding) + lowerIncluding
 }
 
-func (rc *RandomChain) InvalidExecMsgForLog(chain eth.ChainID, block eth.L2BlockRef, log *types2.Log) *types2.Log {
+// invalidIdentifierModeCount is the number of corruption sub-modes
+// InvalidExecMsgForLog dispatches on. Callers that need to bias block
+// selection by mode (e.g. case 5 wants same-timestamp init/exec) pick the
+// mode up-front via randomInvalidIdentifierMode and pass it in.
+const invalidIdentifierModeCount = 6
+
+func (rc *RandomChain) randomInvalidIdentifierMode() int {
+	return rc.randomGenerator.Intn(invalidIdentifierModeCount)
+}
+
+func (rc *RandomChain) InvalidExecMsgForLog(chain eth.ChainID, block eth.L2BlockRef, log *types2.Log, mode int) *types2.Log {
 	payloadHash := crypto.Keccak256Hash(types.LogToMessagePayload(log))
 
 	r := rc.randomGenerator
@@ -619,7 +629,7 @@ func (rc *RandomChain) InvalidExecMsgForLog(chain eth.ChainID, block eth.L2Block
 		PayloadHash: payloadHash,
 	}
 
-	switch r.Intn(5) {
+	switch mode {
 	case 0:
 		// Invalid origin
 		msg.Identifier.Origin = common.HexToAddress("0xffffffffffffffffffffffffffffffffffffffff")
@@ -636,6 +646,14 @@ func (rc *RandomChain) InvalidExecMsgForLog(chain eth.ChainID, block eth.L2Block
 		// Invalid chain ID
 		impossibleChainID := len(rc.chainIDs)
 		msg.Identifier.ChainID = eth.ChainIDFromUInt64(uint64(impossibleChainID))
+	case 5:
+		// Valid identifier fields, wrong payload hash. The frontier-view's
+		// contains() keys on (blockNum, timestamp, logIdx, checksum); a wrong
+		// checksum misses the map and the SUT falls back to the source
+		// chain's logsDB.Contains, which also misses → message rejected.
+		// Exercises the frontier-view miss path (verification_view.go:101-113)
+		// in addition to the always-fired logsDB lookup.
+		msg.PayloadHash = testutils.RandomHash(r)
 	}
 
 	topics, data := msg.EncodeEvent()
@@ -649,17 +667,53 @@ func (rc *RandomChain) InvalidExecMsgForLog(chain eth.ChainID, block eth.L2Block
 
 func (rc *RandomChain) InsertMessageWithInvalidIdentifier() {
 	r := rc.randomGenerator
+	mode := rc.randomInvalidIdentifierMode()
+
 	candidateIndex := randomInRange(r, len(rc.chainIDs), len(rc.allBlocks))
-	randomIndex := randomInRange(r, len(rc.chainIDs), len(rc.allBlocks))
 	candidateBlock := rc.allBlocks[candidateIndex]
-	randomBlock := rc.allBlocks[randomIndex]
+
+	// Case 5 (wrong-checksum) is the only sub-mode that targets the
+	// frontier-view lookup (verification_view.go:101-113). The SUT only
+	// consults the frontier view when the initiating message lives at the
+	// same L2 timestamp as the executing message — otherwise it goes
+	// straight to logsDB.Contains. Bias the init-block pick toward another
+	// chain's block at candidate's exact timestamp so case-5 seeds reliably
+	// fire the frontier-view path; fall back to a random block when no
+	// same-timestamp peer exists (the harness still asserts that the bogus
+	// checksum is rejected via the logsDB path).
+	var randomBlock ChainBlock
+	if mode == 5 {
+		sameTS := make([]ChainBlock, 0)
+		for _, b := range rc.allBlocks {
+			if b.chain == candidateBlock.chain {
+				continue
+			}
+			if b.block.Time != candidateBlock.block.Time {
+				continue
+			}
+			if len(rc.generatedLogs[b]) == 0 {
+				continue
+			}
+			sameTS = append(sameTS, b)
+		}
+		if len(sameTS) > 0 {
+			randomBlock = sameTS[r.Intn(len(sameTS))]
+		} else {
+			randomIndex := randomInRange(r, len(rc.chainIDs), len(rc.allBlocks))
+			randomBlock = rc.allBlocks[randomIndex]
+		}
+	} else {
+		randomIndex := randomInRange(r, len(rc.chainIDs), len(rc.allBlocks))
+		randomBlock = rc.allBlocks[randomIndex]
+	}
+
 	if len(rc.generatedLogs[randomBlock]) == 0 {
 		return
 	}
 	randomLogIndex := r.Intn(len(rc.generatedLogs[randomBlock]))
 	randomLog := rc.generatedLogs[randomBlock][randomLogIndex]
 
-	rc.addInvalidExecutingMessage(candidateBlock, randomBlock, randomLog)
+	rc.addInvalidExecutingMessage(candidateBlock, randomBlock, randomLog, mode)
 
 	rc.invalidationKind = KindInvalidIdentifier
 	rc.invalidationTimestamp = candidateBlock.block.Time
