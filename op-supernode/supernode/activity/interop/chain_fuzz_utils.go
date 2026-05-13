@@ -2,8 +2,10 @@ package interop
 
 import (
 	"context"
+	"math"
 	"math/rand"
 	"math/big"
+	"sort"
 	"testing"
 
 	"github.com/ethereum-optimism/optimism/op-service/eth"
@@ -57,6 +59,7 @@ const (
 	KindInvalidIdentifier
 	KindFutureDependency
 	KindExpiredMessage
+	KindL1Reorg
 )
 
 func (k InvalidationKind) String() string {
@@ -73,6 +76,8 @@ func (k InvalidationKind) String() string {
 		return "FutureDependency"
 	case KindExpiredMessage:
 		return "ExpiredMessage"
+	case KindL1Reorg:
+		return "L1Reorg"
 	default:
 		return "Unknown"
 	}
@@ -106,6 +111,14 @@ type RandomChain struct {
 	chainBlocks   map[eth.ChainID][]*eth.L2BlockRef
 	l1SourceMap   map[ChainBlock]eth.BlockRef
 	l1Source      map[uint64]eth.BlockRef
+	// corruptL1AtNumber overrides L1BlockRefByNumber for the given L1 number.
+	// Populated only by InsertL1Reorg (KindL1Reorg). The mock keeps l1SourceMap
+	// untouched so OptimisticAt returns the *original* L1 ref; the consistency
+	// checker then sees a divergent hash via L1BlockRefByNumber → SameL1Chain
+	// reports the chain inconsistent → checkPreconditions returns DecisionWait
+	// (or DecisionRewind once a verified result already exists at the affected
+	// L1 inclusion).
+	corruptL1AtNumber map[uint64]eth.BlockRef
 	receipts      map[eth.ChainID]map[eth.BlockID]types2.Receipts
 	blockTimes    map[eth.ChainID]int
 	isInvalid     bool
@@ -421,6 +434,7 @@ func (p *RandomChainParams) MakeRandomChain(t *testing.T, seed int64) (res Rando
 		chainBlocks:   make(map[eth.ChainID][]*eth.L2BlockRef),
 		l1SourceMap:   make(map[ChainBlock]eth.BlockRef),
 		l1Source:      make(map[uint64]eth.BlockRef),
+		corruptL1AtNumber: make(map[uint64]eth.BlockRef),
 		receipts:              make(map[eth.ChainID]map[eth.BlockID]types2.Receipts),
 		blockTimes:            make(map[eth.ChainID]int),
 		isInvalid:             false,
@@ -475,9 +489,9 @@ func (p *RandomChainParams) MakeRandomChain(t *testing.T, seed int64) (res Rando
 	// expired dep manually.
 	plannedKind := KindNone
 	if r.Intn(100) < p.invalidateChance {
-		// 5 invalidation modes (1..5). KindNone (0) is reserved for "no
+		// 6 invalidation modes (1..6). KindNone (0) is reserved for "no
 		// invalidation requested" and is not part of the random draw.
-		plannedKind = InvalidationKind(1 + r.Intn(5))
+		plannedKind = InvalidationKind(1 + r.Intn(6))
 	}
 
 	//
@@ -518,8 +532,10 @@ func (p *RandomChainParams) MakeRandomChain(t *testing.T, seed int64) (res Rando
 		// has no random deps for this case (above), so this is the only
 		// dep with a multi-step time gap.
 		res.InsertExpiredMessage(10)
+	case KindL1Reorg:
+		// Deferred — InsertL1Reorg picks an L1 number from the just-built
+		// l1Source map, so it has to run after L1 derivation below.
 	}
-	res.isInvalid = res.invalidationKind != KindNone
 
 	//
 	// Make L1 derivation info
@@ -536,6 +552,12 @@ func (p *RandomChainParams) MakeRandomChain(t *testing.T, seed int64) (res Rando
 		res.l1Source[nextL1.Number] = nextL1
 		taken += take
 	}
+
+	// Post-L1-derivation invalidations.
+	if plannedKind == KindL1Reorg {
+		res.InsertL1Reorg()
+	}
+	res.isInvalid = res.invalidationKind != KindNone
 
 	res.GenerateReceiptsFromLogs()
 
@@ -561,6 +583,9 @@ func TestMakeRandomChain(t *testing.T) {
 var _ l1ByNumberSource = RandomChain{}
 
 func (rc RandomChain) L1BlockRefByNumber(ctx context.Context, num uint64) (eth.L1BlockRef, error) {
+	if alt, ok := rc.corruptL1AtNumber[num]; ok {
+		return alt, nil
+	}
 	return rc.l1Source[num], nil
 }
 
@@ -873,4 +898,72 @@ func (rc *RandomChain) CreateCycle() {
 	for _, p := range set {
 		rc.expectedInvalidChains[p.chain] = true
 	}
+}
+
+// InsertL1Reorg picks one L1 number from the post-derivation l1Source and
+// stores a divergent ref (same Number, fresh Hash) in corruptL1AtNumber.
+// The SUT then sees a mismatch between the live L1 head (from OptimisticAt,
+// served by the untouched l1SourceMap) and L1BlockRefByNumber, which makes
+// SameL1Chain return false and pushes progressAndRecord into DecisionWait
+// (or DecisionRewind once a verified result already references the affected
+// inclusion).
+//
+// The earliest L2 timestamp whose L1 origin is the chosen number is recorded
+// as invalidationTimestamp. The harness's assertProgressStoppedBeforeBug
+// then asserts that the SUT did not commit any verified result at or beyond
+// that timestamp.
+//
+// expectedInvalidChains is left empty: L1 reorg never reaches
+// verifyInteropMessages, so result.InvalidHeads is empty. The harness's
+// assertExpectedResult treats an empty predicted set as "no per-chain
+// invalidation expected" and only asserts InvalidHeads is empty.
+func (rc *RandomChain) InsertL1Reorg() {
+	r := rc.randomGenerator
+	if len(rc.l1Source) < 3 {
+		rc.t.Logf("InsertL1Reorg: only %d L1 numbers available; need >=3 to leave room for commits before divergence", len(rc.l1Source))
+		return
+	}
+
+	l1Nums := make([]uint64, 0, len(rc.l1Source))
+	for n := range rc.l1Source {
+		l1Nums = append(l1Nums, n)
+	}
+	sort.Slice(l1Nums, func(i, j int) bool { return l1Nums[i] < l1Nums[j] })
+
+	// Skip the first two L1 numbers: the very first L1 is the head for
+	// every chain at low timestamps, so corrupting it short-circuits round
+	// one before any commit. Targeting numbers from index 2 onwards gives
+	// progressAndRecord room to commit a handful of timestamps first, so
+	// the oracle has more than a trivial "didn't advance" signal to test.
+	pickIdx := randomInRange(r, 2, len(l1Nums))
+	targetNum := l1Nums[pickIdx]
+
+	original := rc.l1Source[targetNum]
+	divergent := original
+	divergent.Hash = testutils.RandomHash(r)
+	rc.corruptL1AtNumber[targetNum] = divergent
+
+	// Find the earliest L2 timestamp whose L1 origin number is targetNum.
+	// SameL1Chain first observes the divergent hash when some chain's L1
+	// head equals targetNum, which happens at the L2 timestamp where that
+	// chain transitions to L1 origin = targetNum.
+	earliest := uint64(math.MaxUint64)
+	for cb, ref := range rc.l1SourceMap {
+		if ref.Number == targetNum && cb.block.Time < earliest {
+			earliest = cb.block.Time
+		}
+	}
+	if earliest == math.MaxUint64 {
+		// Should not happen: the L1 number came from l1Source which mirrors
+		// l1SourceMap. Bail out defensively rather than corrupting state.
+		delete(rc.corruptL1AtNumber, targetNum)
+		return
+	}
+
+	rc.t.Logf("InsertL1Reorg: corrupting L1 #%d (%s → %s); earliest L2 ts = %d",
+		targetNum, original.Hash, divergent.Hash, earliest)
+
+	rc.invalidationKind = KindL1Reorg
+	rc.invalidationTimestamp = earliest
+	// expectedInvalidChains intentionally left empty — see method doc.
 }
