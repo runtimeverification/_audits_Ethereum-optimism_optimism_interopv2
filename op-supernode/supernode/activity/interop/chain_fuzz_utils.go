@@ -56,6 +56,7 @@ const (
 	KindSelfDependency
 	KindInvalidIdentifier
 	KindFutureDependency
+	KindExpiredMessage
 )
 
 func (k InvalidationKind) String() string {
@@ -70,6 +71,8 @@ func (k InvalidationKind) String() string {
 		return "InvalidIdentifier"
 	case KindFutureDependency:
 		return "FutureDependency"
+	case KindExpiredMessage:
+		return "ExpiredMessage"
 	default:
 		return "Unknown"
 	}
@@ -120,6 +123,14 @@ type RandomChain struct {
 	// lives. Used by the harness to decide whether the SUT actually got far
 	// enough to observe it.
 	invalidationTimestamp uint64
+
+	// messageExpiryWindow is the value the harness will pass to interop.New
+	// for this run. 0 means "use the SUT's default" (defaultMessageExpiryWindow
+	// = 604800s). InsertExpiredMessage sets this to a small value so the
+	// targeted dep crosses the expiry boundary; other invalidation modes
+	// leave it at 0 so random deps (which can naturally span hundreds of
+	// seconds) never trip ErrMessageExpired accidentally.
+	messageExpiryWindow uint64
 }
 
 var _ cc.InteropChain = RandomChainContainer{}
@@ -160,7 +171,15 @@ func (c RandomChainContainer) SyncStatus(ctx context.Context) (*eth.SyncStatus, 
 	block := blocks[len(blocks)-1]
 	cb := ChainBlock{chain: c.chainID, block: block}
 	l1Origin := c.randomChain.l1SourceMap[cb]
-	return &eth.SyncStatus{CurrentL1: l1Origin}, nil
+	// Upstream's resolveFirstVerifiableTimestamp requires both LocalSafeL2 and
+	// SafeL2 to be present with non-zero Number — otherwise the round refuses
+	// to start. The mock doesn't distinguish cross-safe from local-safe, so
+	// report the chain's tip for both.
+	return &eth.SyncStatus{
+		CurrentL1:   l1Origin,
+		LocalSafeL2: *block,
+		SafeL2:      *block,
+	}, nil
 }
 
 func (c RandomChainContainer) OptimisticAt(ctx context.Context, ts uint64) (l2, l1 eth.BlockID, err error) {
@@ -209,8 +228,16 @@ func (c RandomChainContainer) GetDeniedOutput(height uint64, payloadHash common.
 }
 
 func (c RandomChainContainer) OutputV0AtBlockNumber(ctx context.Context, l2BlockNum uint64) (*eth.OutputV0, error) {
-	//TODO
-	return nil, nil
+	// Upstream's newInvalidHead dereferences this without nil-checking, so we
+	// must return a populated value whenever the block exists. StateRoot and
+	// MessagePasserStorageRoot are left zero — the harness doesn't model them
+	// and the SUT only compares BlockHash here.
+	for _, block := range c.randomChain.chainBlocks[c.chainID] {
+		if block.Number == l2BlockNum {
+			return &eth.OutputV0{BlockHash: block.Hash}, nil
+		}
+	}
+	return nil, ethereum.NotFound
 }
 
 func (c RandomChainContainer) HasDeniedAtOrAfterTimestamp(timestamp uint64) (bool, error) {
@@ -377,6 +404,7 @@ func (p *RandomChainParams) MakeRandomChain(t *testing.T, seed int64) (res Rando
 		isInvalid:             false,
 		invalidationKind:      KindNone,
 		expectedInvalidChains: make(map[eth.ChainID]bool),
+		messageExpiryWindow:   0, // 0 → SUT default; only set non-zero in KindExpiredMessage
 	}
 
 	for i := range p.chainCount {
@@ -417,30 +445,59 @@ func (p *RandomChainParams) MakeRandomChain(t *testing.T, seed int64) (res Rando
 		res.cbIndices[cb.block] = i
 	}
 
-	//
-	// Create random dependencies between all blocks
-	//
-	for initIndex, initcb := range res.allBlocks {
-		block := initcb.block
-		if block.Number == 0 {
-			continue
-		}
-
-		for r.Intn(100) < p.dependencyChance {
-			execIndex := randomInRange(r, initIndex, totalLength)
-			execcb := res.allBlocks[execIndex]
-			initiatingLog := res.addRandomLog(initcb)
-			res.addExecutingMessageWithDependency(execcb, initcb, initiatingLog)
-		}
-	}
-
-	// Only mark the chain as invalid if Invalidate() actually applied an
-	// invalidation. Sub-routines may bail out (e.g. CreateCycle when no
-	// same-timestamp set exists), in which case the chain stays valid.
+	// Decide invalidation kind UP FRONT (was previously inside Invalidate()).
+	// We need this before generating random dependencies because the
+	// KindExpiredMessage case must run with a tiny messageExpiryWindow, and
+	// random deps that span hundreds of seconds would also trip it — so we
+	// suppress random deps for expired-message seeds and inject only one
+	// expired dep manually.
+	plannedKind := KindNone
 	if r.Intn(100) < p.invalidateChance {
-		res.Invalidate()
-		res.isInvalid = res.invalidationKind != KindNone
+		// 5 invalidation modes (1..5). KindNone (0) is reserved for "no
+		// invalidation requested" and is not part of the random draw.
+		plannedKind = InvalidationKind(1 + r.Intn(5))
 	}
+
+	//
+	// Create random dependencies between all blocks (skipped when fuzzing
+	// expired-message — see comment above).
+	//
+	if plannedKind != KindExpiredMessage {
+		for initIndex, initcb := range res.allBlocks {
+			block := initcb.block
+			if block.Number == 0 {
+				continue
+			}
+
+			for r.Intn(100) < p.dependencyChance {
+				execIndex := randomInRange(r, initIndex, totalLength)
+				execcb := res.allBlocks[execIndex]
+				initiatingLog := res.addRandomLog(initcb)
+				res.addExecutingMessageWithDependency(execcb, initcb, initiatingLog)
+			}
+		}
+	}
+
+	// Apply the planned invalidation. Each sub-routine self-records via
+	// res.invalidationKind on success; bailouts (CreateCycle with no
+	// same-timestamp set, InsertExpiredMessage with too-short chain) leave
+	// the chain valid.
+	switch plannedKind {
+	case KindCycle:
+		res.CreateCycle()
+	case KindSelfDependency:
+		res.InsertSelfDependency()
+	case KindInvalidIdentifier:
+		res.InsertMessageWithInvalidIdentifier()
+	case KindFutureDependency:
+		res.InsertFutureDependency()
+	case KindExpiredMessage:
+		// Small window so the targeted gap exceeds it. The chain currently
+		// has no random deps for this case (above), so this is the only
+		// dep with a multi-step time gap.
+		res.InsertExpiredMessage(10)
+	}
+	res.isInvalid = res.invalidationKind != KindNone
 
 	//
 	// Make L1 derivation info
@@ -587,26 +644,6 @@ func (rc *RandomChain) InsertMessageWithInvalidIdentifier() {
 	rc.expectedInvalidChains[candidateBlock.chain] = true
 }
 
-func (rc *RandomChain) Invalidate() {
-	r := rc.randomGenerator
-	rc.t.Logf("Invalidating chains!")
-	switch r.Intn(4) {
-	case 0:
-		rc.t.Logf("Creating a cycle")
-		rc.CreateCycle()
-	case 1:
-		rc.t.Logf("Creating a self dependency")
-		rc.InsertSelfDependency()
-	case 2:
-		rc.t.Logf("Creating an invalid message")
-		rc.InsertMessageWithInvalidIdentifier()
-	case 3:
-		rc.t.Logf("Creating a future dependency")
-		rc.InsertFutureDependency()
-	default:
-	}
-}
-
 func (rc *RandomChain) InsertFutureDependency() {
 	t := rc.t
 	r := rc.randomGenerator
@@ -634,6 +671,78 @@ func (rc *RandomChain) InsertFutureDependency() {
 	rc.invalidationKind = KindFutureDependency
 	rc.invalidationTimestamp = candidateBlock.block.Time
 	rc.expectedInvalidChains[candidateBlock.chain] = true
+}
+
+// InsertExpiredMessage injects a single executing message whose initiating
+// message lives more than expiryWindow seconds in the past, so the SUT's
+// verifyExecutingMessage trips the `initTimestamp + messageExpiryWindow <
+// executingTimestamp` branch (algo.go) and returns ErrMessageExpired.
+//
+// On success: sets invalidationKind=KindExpiredMessage,
+// invalidationTimestamp to the executing block's time, expectedInvalidChains
+// to the executing block's chain, and messageExpiryWindow to the supplied
+// window value so the harness's New() call uses it.
+//
+// On failure (chain too short to support the required time gap): leaves the
+// chain valid (invalidationKind stays KindNone).
+func (rc *RandomChain) InsertExpiredMessage(expiryWindow uint64) {
+	r := rc.randomGenerator
+	t := rc.t
+
+	// Walk back from the chain's last block to find an executing candidate
+	// whose time strictly exceeds expiryWindow (otherwise no initiating block
+	// could sit > expiryWindow earlier).
+	candidateIndex := -1
+	for i := len(rc.allBlocks) - 1; i >= len(rc.chainIDs); i-- {
+		if rc.allBlocks[i].block.Time > expiryWindow+1 {
+			candidateIndex = i
+			break
+		}
+	}
+	if candidateIndex == -1 {
+		t.Logf("InsertExpiredMessage: chain too short for window=%d, skipping", expiryWindow)
+		return
+	}
+	candidateBlock := rc.allBlocks[candidateIndex]
+
+	// Find the latest initiating-block index whose time is at most
+	// candidate.Time - expiryWindow - 1. Picking the latest such block
+	// makes the gap as small as possible while still crossing the boundary,
+	// which is good for keeping the seed visualizable.
+	threshold := candidateBlock.block.Time - expiryWindow - 1
+	initIndex := -1
+	for i := len(rc.chainIDs); i < candidateIndex; i++ {
+		if rc.allBlocks[i].block.Time <= threshold {
+			initIndex = i
+		} else {
+			break
+		}
+	}
+	if initIndex == -1 {
+		t.Logf("InsertExpiredMessage: no init block before candidate@%d satisfies threshold=%d",
+			candidateBlock.block.Time, threshold)
+		return
+	}
+	initBlock := rc.allBlocks[initIndex]
+
+	t.Logf("InsertExpiredMessage: init (chain=%s num=%d time=%d) → exec (chain=%s num=%d time=%d), gap=%d window=%d (seed-driven)",
+		initBlock.chain, initBlock.block.Number, initBlock.block.Time,
+		candidateBlock.chain, candidateBlock.block.Number, candidateBlock.block.Time,
+		candidateBlock.block.Time-initBlock.block.Time, expiryWindow)
+
+	// Add the initiating message to the init block and an executing message
+	// referencing it on the candidate block.
+	initiatingLog := rc.addRandomLog(initBlock)
+	rc.addExecutingMessageWithDependency(candidateBlock, initBlock, initiatingLog)
+
+	rc.invalidationKind = KindExpiredMessage
+	rc.invalidationTimestamp = candidateBlock.block.Time
+	rc.expectedInvalidChains[candidateBlock.chain] = true
+	rc.messageExpiryWindow = expiryWindow
+
+	// Quiet the unused-warning if r is not used in the picker (kept for symmetry
+	// with the other Insert* routines which all draw from rc.randomGenerator).
+	_ = r
 }
 
 func (rc *RandomChain) InsertSelfDependency() {
