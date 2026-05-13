@@ -930,40 +930,106 @@ func (rc *RandomChain) InsertL1Reorg() {
 	}
 	sort.Slice(l1Nums, func(i, j int) bool { return l1Nums[i] < l1Nums[j] })
 
-	// Skip the first two L1 numbers: the very first L1 is the head for
-	// every chain at low timestamps, so corrupting it short-circuits round
-	// one before any commit. Targeting numbers from index 2 onwards gives
-	// progressAndRecord room to commit a handful of timestamps first, so
-	// the oracle has more than a trivial "didn't advance" signal to test.
-	pickIdx := randomInRange(r, 2, len(l1Nums))
-	targetNum := l1Nums[pickIdx]
-
-	original := rc.l1Source[targetNum]
-	divergent := original
-	divergent.Hash = testutils.RandomHash(r)
-	rc.corruptL1AtNumber[targetNum] = divergent
-
-	// Find the earliest L2 timestamp whose L1 origin number is targetNum.
-	// SameL1Chain first observes the divergent hash when some chain's L1
-	// head equals targetNum, which happens at the L2 timestamp where that
-	// chain transitions to L1 origin = targetNum.
-	earliest := uint64(math.MaxUint64)
-	for cb, ref := range rc.l1SourceMap {
-		if ref.Number == targetNum && cb.block.Time < earliest {
-			earliest = cb.block.Time
+	// Compute the SUT's loop start. resolveFirstVerifiableTimestamp uses
+	// SyncStatus.SafeL2 = blocks[1] (see SyncStatus mock), so the SUT
+	// processes ts starting at min over chains of blocks[1].Time + 1
+	// (firstVerifiable = minCrossSafeTime + 1).
+	loopStart := uint64(math.MaxUint64)
+	for _, chainID := range rc.chainIDs {
+		blocks := rc.chainBlocks[chainID]
+		if len(blocks) < 2 {
+			continue
+		}
+		start := blocks[1].Time + 1
+		if start < loopStart {
+			loopStart = start
 		}
 	}
-	if earliest == math.MaxUint64 {
-		// Should not happen: the L1 number came from l1Source which mirrors
-		// l1SourceMap. Bail out defensively rather than corrupting state.
-		delete(rc.corruptL1AtNumber, targetNum)
+
+	// Try several candidate L1 numbers and pick the first that's visible:
+	// some chain has a block with L1=targetNum whose validity window
+	// (the L2 ts range during which OptimisticAt returns that block)
+	// overlaps [loopStart, ∞). Otherwise the SUT will correctly never
+	// observe the corruption and the oracle would false-alarm.
+	r.Shuffle(len(l1Nums), func(i, j int) { l1Nums[i], l1Nums[j] = l1Nums[j], l1Nums[i] })
+	for _, candidate := range l1Nums {
+		earliest, ok := rc.earliestDetectableL1ReorgTS(candidate, loopStart)
+		if !ok {
+			continue
+		}
+		original := rc.l1Source[candidate]
+		divergent := original
+		divergent.Hash = testutils.RandomHash(r)
+		rc.corruptL1AtNumber[candidate] = divergent
+
+		rc.t.Logf("InsertL1Reorg: corrupting L1 #%d (%s → %s); earliest detectable L2 ts = %d (loopStart=%d)",
+			candidate, original.Hash, divergent.Hash, earliest, loopStart)
+
+		rc.invalidationKind = KindL1Reorg
+		rc.invalidationTimestamp = earliest
+		// expectedInvalidChains intentionally left empty — see method doc.
 		return
 	}
 
-	rc.t.Logf("InsertL1Reorg: corrupting L1 #%d (%s → %s); earliest L2 ts = %d",
-		targetNum, original.Hash, divergent.Hash, earliest)
+	rc.t.Logf("InsertL1Reorg: no candidate L1 number has a validity window overlapping the SUT's loop (loopStart=%d); skipping invalidation for this seed", loopStart)
+}
 
-	rc.invalidationKind = KindL1Reorg
-	rc.invalidationTimestamp = earliest
-	// expectedInvalidChains intentionally left empty — see method doc.
+// earliestDetectableL1ReorgTS returns the earliest L2 timestamp at which
+// some chain's OptimisticAt result has L1 origin == targetNum AND the
+// timestamp is at or above loopStart. Returns (_, false) when no chain's
+// validity window overlaps the SUT's loop range — i.e., the corruption
+// would be invisible to the SUT and asserting "must stop before X" would
+// be vacuously wrong.
+//
+// A chain c's L1Head = targetNum for ts in [block.Time, nextBlock.Time-1]
+// when chain c's chainBlocks contains a contiguous run of blocks all
+// mapped to targetNum. nextBlock is the next block in chain c with a
+// different L1 origin (or any L1 ts past the run if no such block).
+// The function returns the min over chains of max(window_start, loopStart),
+// restricted to chains whose window's tail >= loopStart.
+func (rc *RandomChain) earliestDetectableL1ReorgTS(targetNum uint64, loopStart uint64) (uint64, bool) {
+	earliest := uint64(math.MaxUint64)
+	found := false
+	for _, chainID := range rc.chainIDs {
+		blocks := rc.chainBlocks[chainID]
+		i := 0
+		for i < len(blocks) {
+			if rc.l1SourceMap[ChainBlock{chainID, blocks[i]}].Number != targetNum {
+				i++
+				continue
+			}
+			// Found a run start at blocks[i]. Walk forward while still in run.
+			windowStart := blocks[i].Time
+			j := i + 1
+			for j < len(blocks) && rc.l1SourceMap[ChainBlock{chainID, blocks[j]}].Number == targetNum {
+				j++
+			}
+			var windowEnd uint64
+			if j < len(blocks) {
+				// Next block on chain c switches to a different L1 ref; chain c's
+				// L1Head reverts to targetNum's successor at blocks[j].Time.
+				windowEnd = blocks[j].Time - 1
+			} else {
+				// No further blocks on chain c; the window extends indefinitely
+				// (the SUT keeps seeing targetNum as chain c's L1Head). Use the
+				// largest L2 ts on this chain as a conservative upper bound, plus
+				// the chain's blockTime to model the implicit "still-the-head"
+				// region a bit beyond the last block.
+				blockTime := uint64(rc.blockTimes[chainID])
+				windowEnd = blocks[len(blocks)-1].Time + blockTime
+			}
+			if windowEnd >= loopStart {
+				visibleStart := windowStart
+				if visibleStart < loopStart {
+					visibleStart = loopStart
+				}
+				if visibleStart < earliest {
+					earliest = visibleStart
+				}
+				found = true
+			}
+			i = j
+		}
+	}
+	return earliest, found
 }
