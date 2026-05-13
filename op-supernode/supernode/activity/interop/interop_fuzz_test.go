@@ -12,6 +12,21 @@ import (
 )
 
 func FuzzVerifyInteropMessages(f *testing.F) {
+	// In-code seed corpus. testdata/fuzz/FuzzVerifyInteropMessages/ is
+	// gitignored at the repo root, so a fresh checkout has no on-disk
+	// seeds. These f.Add inputs give every checkout a deterministic
+	// starting corpus that exercises a spread of the six invalidation
+	// kinds (None, Cycle, SelfDependency, InvalidIdentifier,
+	// FutureDependency, ExpiredMessage, L1Reorg). The numChainsRaw>>6
+	// dance picks 1..4 chains; the harness clamps to >=2.
+	f.Add(int64(0), uint8(0x80))
+	f.Add(int64(1), uint8(0xff))
+	f.Add(int64(2), uint8(0x40))
+	f.Add(int64(42), uint8(0xa0))
+	f.Add(int64(100), uint8(0xc0))
+	f.Add(int64(2147483647), uint8(0x80)) // large positive seed
+	f.Add(int64(-1), uint8(0x80))         // negative seed exercises rand seeding
+	f.Add(int64(7777), uint8(0xc0))
 	f.Fuzz(func(t *testing.T, seed int64, numChainsRaw uint8) {
 		params := RandomChainParams {
 			chainCount:             max(2, int(numChainsRaw>>6)),
