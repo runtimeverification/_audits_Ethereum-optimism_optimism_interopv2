@@ -182,9 +182,13 @@ func (h *interopFuzzHarness) Build() *interopFuzzHarness {
 
 	h.mocks = h.randomChain.GetContainers()
 	logger := gethlog.NewLogger(gethlog.NewTerminalHandler(testWriter{h.t}, true))
-	// messageExpiryWindow=0 → upstream defaultMessageExpiryWindow (604800s).
-	// logBackfillDepth=0 and metrics=nil match upstream's defaults; New() substitutes a noop metrics impl.
-	h.interop = New(logger, h.activationTime, 0, h.mocks, h.dataDir, h.randomChain, 0, nil)
+	// messageExpiryWindow comes from the RandomChain: 0 falls back to the
+	// SUT's defaultMessageExpiryWindow (604800s) for all kinds except
+	// KindExpiredMessage, which sets a small value targeted at the gap of
+	// the injected expired dep so the SUT trips ErrMessageExpired.
+	// logBackfillDepth=0 and metrics=nil match upstream's defaults; New()
+	// substitutes a noop metrics impl when metrics is nil.
+	h.interop = New(logger, h.activationTime, h.randomChain.messageExpiryWindow, h.mocks, h.dataDir, h.randomChain, 0, nil)
 	if h.interop != nil {
 		h.interop.ctx = context.Background()
 		h.t.Cleanup(func() { _ = h.interop.Stop(context.Background()) })
