@@ -153,6 +153,24 @@ type RandomChainContainer struct {
 	randomChain        *RandomChain
 }
 
+// ELFinalizedHead implements chain_container.InteropChain.
+func (c RandomChainContainer) ELFinalizedHead(ctx context.Context) (eth.L2BlockRef, error) {
+	blocks := c.randomChain.chainBlocks[c.chainID]
+	if len(blocks) == 0 {
+		return eth.L2BlockRef{}, ethereum.NotFound
+	}
+	return *blocks[len(blocks)-1], nil
+}
+
+// FirstSafeHeadTimestamp implements chain_container.InteropChain.
+func (c RandomChainContainer) FirstSafeHeadTimestamp(ctx context.Context) (uint64, error) {
+	blocks := c.randomChain.chainBlocks[c.chainID]
+	if len(blocks) < 2 {
+		return 0, cc.ErrSafeDBNotReady
+	}
+	return blocks[1].Time, nil
+}
+
 func (c RandomChainContainer) ID() eth.ChainID                                  { return c.chainID }
 func (c RandomChainContainer) Start(ctx context.Context) error                  { return nil }
 func (c RandomChainContainer) Stop(ctx context.Context) error                   { return nil }
