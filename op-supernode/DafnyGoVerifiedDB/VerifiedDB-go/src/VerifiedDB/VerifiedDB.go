@@ -73,6 +73,27 @@ func (_this *VerifiedDB) ParentTraits_() []*_dafny.TraitID {
 
 var _ _dafny.TraitOffspring = &VerifiedDB{}
 
+func (_this *VerifiedDB) ValidNonGhost() bool {
+	{
+		return (_dafny.Quantifier((_this.Db).Keys().Elements(), true, func(_forall_var_0 _dafny.Int) bool {
+			var _0_ts _dafny.Int
+			_0_ts = interface{}(_forall_var_0).(_dafny.Int)
+			return !((_this.Db).Contains(_0_ts)) || ((((_this.Db).Get(_0_ts).(m_Types.VerifiedResult)).Dtor_timestamp()).Cmp(_0_ts) == 0)
+		})) && (_dafny.Quantifier((_this.Db).Keys().Elements(), true, func(_forall_var_1 _dafny.Int) bool {
+			var _1_t1 _dafny.Int
+			_1_t1 = interface{}(_forall_var_1).(_dafny.Int)
+			return _dafny.Quantifier((_this.Db).Keys().Elements(), true, func(_forall_var_2 _dafny.Int) bool {
+				var _2_t2 _dafny.Int
+				_2_t2 = interface{}(_forall_var_2).(_dafny.Int)
+				return _dafny.Quantifier((((_this.Db).Get(_1_t1).(m_Types.VerifiedResult)).Dtor_l2Heads()).Keys().Elements(), true, func(_forall_var_3 _dafny.Int) bool {
+					var _3_cid _dafny.Int
+					_3_cid = interface{}(_forall_var_3).(_dafny.Int)
+					return !((((((_this.Db).Contains(_1_t1)) && ((_this.Db).Contains(_2_t2))) && ((_1_t1).Cmp(_2_t2) <= 0)) && ((((_this.Db).Get(_1_t1).(m_Types.VerifiedResult)).Dtor_l2Heads()).Contains(_3_cid))) && ((((_this.Db).Get(_2_t2).(m_Types.VerifiedResult)).Dtor_l2Heads()).Contains(_3_cid))) || ((((((_this.Db).Get(_1_t1).(m_Types.VerifiedResult)).Dtor_l2Heads()).Get(_3_cid).(m_Types.BlockID)).Dtor_number()).Cmp(((((_this.Db).Get(_2_t2).(m_Types.VerifiedResult)).Dtor_l2Heads()).Get(_3_cid).(m_Types.BlockID)).Dtor_number()) <= 0)
+				})
+			})
+		}))
+	}
+}
 func (_this *VerifiedDB) Ctor__() {
 	{
 		(_this).Db = _dafny.NewMapBuilder().ToMap()

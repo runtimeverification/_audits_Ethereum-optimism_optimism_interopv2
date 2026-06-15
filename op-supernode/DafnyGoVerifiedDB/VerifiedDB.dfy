@@ -38,6 +38,16 @@ module VerifiedDB {
         cid in db[t1].l2Heads && cid in db[t2].l2Heads ==>
         db[t1].l2Heads[cid].number <= db[t2].l2Heads[cid].number)
     }
+    
+    predicate ValidNonGhost()
+      reads this
+    {
+      (forall ts :: ts in db ==> db[ts].timestamp == ts) &&
+      (forall t1, t2, cid ::
+        t1 in db && t2 in db && t1 <= t2 &&
+        cid in db[t1].l2Heads && cid in db[t2].l2Heads ==>
+        db[t1].l2Heads[cid].number <= db[t2].l2Heads[cid].number)
+    }
 
     // Initializes an empty VerifiedDB.
     constructor()
