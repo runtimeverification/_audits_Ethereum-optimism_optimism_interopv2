@@ -1,0 +1,11 @@
+file_format_version = "1.0"
+dafny_version = "4.11.0.0"
+[options_by_module.Types]
+legacy-module-names = false
+rust-sync = false
+[options_by_module.Utils]
+legacy-module-names = false
+rust-sync = false
+[options_by_module.VerifiedDB]
+legacy-module-names = false
+rust-sync = false
