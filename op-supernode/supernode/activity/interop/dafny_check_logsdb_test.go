@@ -16,12 +16,14 @@ import (
 // views the LogsDB.dfy checker reads; other LogsDB methods panic (nil embed).
 type sealsMockLogsDB struct {
 	LogsDB
-	first     suptypes.BlockSeal
-	firstErr  error
-	latest    eth.BlockID
-	hasLatest bool
-	seals     map[uint64]suptypes.BlockSeal
-	findErrs  map[uint64]error
+	first       suptypes.BlockSeal
+	firstErr    error
+	latest      eth.BlockID
+	hasLatest   bool
+	seals       map[uint64]suptypes.BlockSeal
+	findErrs    map[uint64]error
+	openErrs    map[uint64]error
+	openExecMsg map[uint64]map[uint32]*suptypes.ExecutingMessage
 }
 
 func (m *sealsMockLogsDB) LatestSealedBlock() (eth.BlockID, bool) {
@@ -45,6 +47,17 @@ func (m *sealsMockLogsDB) FindSealedBlock(number uint64) (suptypes.BlockSeal, er
 	return suptypes.BlockSeal{}, suptypes.ErrFuture
 }
 
+func (m *sealsMockLogsDB) OpenBlock(blockNum uint64) (eth.BlockRef, uint32, map[uint32]*suptypes.ExecutingMessage, error) {
+	if err, ok := m.openErrs[blockNum]; ok {
+		return eth.BlockRef{}, 0, nil, err
+	}
+	if msgs, ok := m.openExecMsg[blockNum]; ok {
+		return eth.BlockRef{Number: blockNum}, 0, msgs, nil
+	}
+	// Default: non-genesis first block returns ErrSkipped (anchor block).
+	return eth.BlockRef{}, 0, nil, suptypes.ErrSkipped
+}
+
 var _ LogsDB = (*sealsMockLogsDB)(nil)
 
 // dafnySeal builds a BlockSeal at the given number and timestamp with a
@@ -61,9 +74,11 @@ func dafnySeal(number, timestamp uint64) suptypes.BlockSeal {
 // given seals, which must be in ascending block-number order.
 func dafnySealedMock(seals ...suptypes.BlockSeal) *sealsMockLogsDB {
 	m := &sealsMockLogsDB{
-		firstErr: suptypes.ErrFuture,
-		seals:    make(map[uint64]suptypes.BlockSeal, len(seals)),
-		findErrs: make(map[uint64]error),
+		firstErr:    suptypes.ErrFuture,
+		seals:       make(map[uint64]suptypes.BlockSeal, len(seals)),
+		findErrs:    make(map[uint64]error),
+		openErrs:    make(map[uint64]error),
+		openExecMsg: make(map[uint64]map[uint32]*suptypes.ExecutingMessage),
 	}
 	for _, s := range seals {
 		m.seals[s.Number] = s
@@ -98,6 +113,20 @@ func TestCheckLogsDBSealsWellFormedPass(t *testing.T) {
 		t.Parallel()
 		db := dafnySealedMock(dafnySeal(5, 1000), dafnySeal(7, 1002))
 		db.findErrs[6] = suptypes.ErrSkipped
+		require.NoError(t, CheckLogsDBSealsWellFormed(db))
+	})
+
+	t.Run("conjunct X1: first block OpenBlock returns ErrSkipped (anchor)", func(t *testing.T) {
+		t.Parallel()
+		db := dafnySealedMock(dafnySeal(5, 1000), dafnySeal(6, 1001))
+		// Default mock behaviour: OpenBlock(5) returns ErrSkipped.
+		require.NoError(t, CheckLogsDBSealsWellFormed(db))
+	})
+
+	t.Run("conjunct X1: genesis first block with zero exec msgs", func(t *testing.T) {
+		t.Parallel()
+		db := dafnySealedMock(dafnySeal(0, 1000), dafnySeal(1, 1001))
+		db.openExecMsg[0] = map[uint32]*suptypes.ExecutingMessage{} // zero exec msgs
 		require.NoError(t, CheckLogsDBSealsWellFormed(db))
 	})
 
@@ -241,6 +270,25 @@ func TestCheckLogsDBSealsWellFormedViolations(t *testing.T) {
 		err := CheckLogsDBSealsWellFormed(db)
 		require.ErrorContains(t, err, "conjunct (F1)")
 		require.ErrorContains(t, err, "conjunct (T1)")
+	})
+
+	t.Run("conjunct X1: first block has executing messages", func(t *testing.T) {
+		t.Parallel()
+		db := dafnySealedMock(dafnySeal(0, 1000), dafnySeal(1, 1001))
+		execMsg := &suptypes.ExecutingMessage{BlockNum: 0, LogIdx: 0}
+		db.openExecMsg[0] = map[uint32]*suptypes.ExecutingMessage{0: execMsg}
+		err := CheckLogsDBSealsWellFormed(db)
+		require.ErrorContains(t, err, "conjunct (X1)")
+		require.ErrorContains(t, err, "1 executing messages, want 0")
+	})
+
+	t.Run("conjunct 0: OpenBlock on first block fails with unexpected error", func(t *testing.T) {
+		t.Parallel()
+		db := dafnySealedMock(dafnySeal(5, 1000), dafnySeal(6, 1001))
+		db.openErrs[5] = errors.New("disk error")
+		err := CheckLogsDBSealsWellFormed(db)
+		require.ErrorContains(t, err, "conjunct (0)")
+		require.ErrorContains(t, err, "OpenBlock(5) failed")
 	})
 }
 

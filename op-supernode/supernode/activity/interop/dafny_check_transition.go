@@ -311,7 +311,9 @@ func checkPlanConsistentWithLogs(i *Interop, plan RewindPlan, chainID eth.ChainI
 // CheckPlanConsistentWithLogs mirrors PlanConsistentWithLogs(plan, chainID) in
 // op-supernode/dafny-models/Interop.dfy. The None case of
 // plan.resetAllChainsTo is always consistent (Clear() has no preconditions).
-// Conjuncts (Some case):
+// The model's requires clause reads `chainID in plan.targetHeads.Keys` (updated
+// from `chainID in plan.targetHeads` in the reconciliation delta; no body
+// change). Conjuncts (Some case):
 //
 //	(0) i is non-nil, chainID in logsDBs.Keys, chainID in plan.targetHeads,
 //	    and FindSealedBlock errors are not-found sentinels (mapping
@@ -494,6 +496,68 @@ func CheckRewoundLogsDB(i *Interop, plan RewindPlan, chainID eth.ChainID) error 
 func AssertRewoundLogsDB(t dafnyT, i *Interop, plan RewindPlan, chainID eth.ChainID) {
 	t.Helper()
 	failOnViolation(t, CheckRewoundLogsDB(i, plan, chainID))
+}
+
+// CheckPlanConsistentWithAllLogs mirrors PlanConsistentWithAllLogs(plan) in
+// op-supernode/dafny-models/Interop.dfy:
+// `forall chainID :: chainID in logsDBs.Keys ==> PlanConsistentWithLogs(plan, chainID)`.
+// The model's `requires plan.resetAllChainsTo.Some? ==> plan.targetHeads.Keys == logsDBs.Keys`
+// is enforced as conjunct (0). Violations carry the failing chain's ID; per-chain
+// conjunct labels are those of CheckPlanConsistentWithLogs.
+func CheckPlanConsistentWithAllLogs(i *Interop, plan RewindPlan) error {
+	const pred = "Interop.dfy PlanConsistentWithAllLogs"
+	if i == nil {
+		return violation(pred, "0", "Interop is nil")
+	}
+	if plan.ResetAllChainsTo != nil && !sameChainIDKeys(plan.TargetHeads, i.logsDBs) {
+		return violation(pred, "0",
+			"requires plan.targetHeads.Keys == logsDBs.Keys: %v vs %v",
+			sortedChainIDs(plan.TargetHeads), sortedLogsDBChainIDs(i))
+	}
+	var errs []error
+	for _, k := range sortedLogsDBChainIDs(i) {
+		if err := CheckPlanConsistentWithLogs(i, plan, k); err != nil {
+			errs = append(errs, fmt.Errorf("%s: chain %s: %w", pred, k, err))
+		}
+	}
+	return errors.Join(errs...)
+}
+
+// AssertPlanConsistentWithAllLogs fails t when CheckPlanConsistentWithAllLogs
+// reports violations.
+func AssertPlanConsistentWithAllLogs(t dafnyT, i *Interop, plan RewindPlan) {
+	t.Helper()
+	failOnViolation(t, CheckPlanConsistentWithAllLogs(i, plan))
+}
+
+// CheckRewoundAllLogsDB mirrors RewoundAllLogsDB(plan) in
+// op-supernode/dafny-models/Interop.dfy:
+// `forall chainID :: chainID in logsDBs.Keys ==> RewoundLogsDB(plan, chainID)`.
+// The model's `requires plan.resetAllChainsTo.Some? ==> plan.targetHeads.Keys == logsDBs.Keys`
+// and `requires PlanConsistentWithAllLogs(plan)` are both enforced first.
+// Violations carry the failing chain's ID; per-chain conjunct labels are those
+// of CheckRewoundLogsDB.
+func CheckRewoundAllLogsDB(i *Interop, plan RewindPlan) error {
+	const pred = "Interop.dfy RewoundAllLogsDB"
+	if i == nil {
+		return violation(pred, "0", "Interop is nil")
+	}
+	if err := CheckPlanConsistentWithAllLogs(i, plan); err != nil {
+		return fmt.Errorf("%s requires PlanConsistentWithAllLogs: %w", pred, err)
+	}
+	var errs []error
+	for _, k := range sortedLogsDBChainIDs(i) {
+		if err := CheckRewoundLogsDB(i, plan, k); err != nil {
+			errs = append(errs, fmt.Errorf("%s: chain %s: %w", pred, k, err))
+		}
+	}
+	return errors.Join(errs...)
+}
+
+// AssertRewoundAllLogsDB fails t when CheckRewoundAllLogsDB reports violations.
+func AssertRewoundAllLogsDB(t dafnyT, i *Interop, plan RewindPlan) {
+	t.Helper()
+	failOnViolation(t, CheckRewoundAllLogsDB(i, plan))
 }
 
 // checkTransitionConsistentWithVerified is the body of

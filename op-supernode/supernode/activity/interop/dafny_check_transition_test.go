@@ -567,6 +567,90 @@ func TestCheckTransitionConsistentWithLogs(t *testing.T) {
 	})
 }
 
+func TestCheckPlanConsistentWithAllLogs(t *testing.T) {
+	t.Parallel()
+
+	t.Run("pass: None plan", func(t *testing.T) {
+		t.Parallel()
+		require.NoError(t, CheckPlanConsistentWithAllLogs(dafnySyncedInterop(t), RewindPlan{}))
+	})
+
+	t.Run("pass: Some plan consistent with all chains", func(t *testing.T) {
+		t.Parallel()
+		require.NoError(t, CheckPlanConsistentWithAllLogs(dafnySyncedInterop(t), dafnySyncedPlan()))
+	})
+
+	t.Run("conjunct 0: nil interop", func(t *testing.T) {
+		t.Parallel()
+		err := CheckPlanConsistentWithAllLogs(nil, RewindPlan{})
+		require.ErrorContains(t, err, "conjunct (0)")
+	})
+
+	t.Run("conjunct 0: targetHeads keys differ from logsDBs keys", func(t *testing.T) {
+		t.Parallel()
+		i := dafnySyncedInterop(t)
+		plan := dafnySyncedPlan()
+		delete(plan.TargetHeads, dafnyChainID(2))
+		err := CheckPlanConsistentWithAllLogs(i, plan)
+		require.ErrorContains(t, err, "conjunct (0)")
+		require.ErrorContains(t, err, "plan.targetHeads.Keys == logsDBs.Keys")
+	})
+
+	t.Run("per-chain violation: one chain inconsistent", func(t *testing.T) {
+		t.Parallel()
+		i := dafnySyncedInterop(t)
+		mockLogsDBFor(t, i, 1).seals[101] = suptypes.BlockSeal{
+			Hash: common.Hash{0xff}, Number: 101, Timestamp: 1001,
+		}
+		err := CheckPlanConsistentWithAllLogs(i, dafnySyncedPlan())
+		require.ErrorContains(t, err, "chain 1")
+		require.NotContains(t, err.Error(), "chain 2")
+	})
+}
+
+func TestCheckRewoundAllLogsDB(t *testing.T) {
+	t.Parallel()
+
+	t.Run("pass: rewound state consistent across all chains", func(t *testing.T) {
+		t.Parallel()
+		i, plan := dafnyRewoundInterop(t)
+		require.NoError(t, CheckRewoundAllLogsDB(i, plan))
+	})
+
+	t.Run("pass: full-clear plan with empty logsDBs", func(t *testing.T) {
+		t.Parallel()
+		i := dafnyTestInterop(t)
+		plan := RewindPlan{RewindAtOrAfter: 999}
+		require.NoError(t, CheckRewoundAllLogsDB(i, plan))
+	})
+
+	t.Run("conjunct 0: nil interop", func(t *testing.T) {
+		t.Parallel()
+		err := CheckRewoundAllLogsDB(nil, RewindPlan{})
+		require.ErrorContains(t, err, "conjunct (0)")
+	})
+
+	t.Run("requires PlanConsistentWithAllLogs: fails when plan keys mismatch", func(t *testing.T) {
+		t.Parallel()
+		i := dafnySyncedInterop(t)
+		plan := dafnySyncedPlan()
+		delete(plan.TargetHeads, dafnyChainID(2))
+		err := CheckRewoundAllLogsDB(i, plan)
+		require.ErrorContains(t, err, "requires PlanConsistentWithAllLogs")
+	})
+
+	t.Run("per-chain violation: one chain not yet rewound", func(t *testing.T) {
+		t.Parallel()
+		i, plan := dafnyRewoundInterop(t)
+		// Advance chain 2 past the rewind target to break the rewound state.
+		mockLogsDBFor(t, i, 2).latest = dafnyBlock(202)
+		mockLogsDBFor(t, i, 2).hasLatest = true
+		err := CheckRewoundAllLogsDB(i, plan)
+		require.ErrorContains(t, err, "chain 2")
+		require.NotContains(t, err.Error(), "chain 1")
+	})
+}
+
 func TestCheckPendingTransitionIsConsistent(t *testing.T) {
 	t.Parallel()
 
@@ -749,8 +833,10 @@ func TestTransitionAsserts(t *testing.T) {
 		AssertAdvancesAllLogsDBs(ft, i, 1003, dafnyHeads(map[uint64]uint64{1: 103, 2: 203}))
 		AssertPlanConsistentWithVerified(ft, i, dafnySyncedPlan())
 		AssertPlanConsistentWithLogs(ft, i, dafnySyncedPlan(), dafnyChainID(1))
+		AssertPlanConsistentWithAllLogs(ft, i, dafnySyncedPlan())
 		AssertRewoundVerifiedDB(ft, r, plan)
 		AssertRewoundLogsDB(ft, r, plan, dafnyChainID(1))
+		AssertRewoundAllLogsDB(ft, r, plan)
 		AssertTransitionConsistentWithVerified(ft, i, dafnySyncedAdvance())
 		AssertTransitionConsistentWithLogs(ft, i, dafnySyncedAdvance())
 		AssertPendingTransitionIsConsistent(ft, i)
@@ -770,7 +856,9 @@ func TestTransitionAsserts(t *testing.T) {
 			AssertPlanConsistentWithLogs(ft, nil, RewindPlan{}, dafnyChainID(1))
 		},
 		"AssertRewoundVerifiedDB": func(ft dafnyT) { AssertRewoundVerifiedDB(ft, nil, RewindPlan{}) },
-		"AssertRewoundLogsDB":     func(ft dafnyT) { AssertRewoundLogsDB(ft, nil, RewindPlan{}, dafnyChainID(1)) },
+		"AssertRewoundLogsDB":        func(ft dafnyT) { AssertRewoundLogsDB(ft, nil, RewindPlan{}, dafnyChainID(1)) },
+		"AssertPlanConsistentWithAllLogs": func(ft dafnyT) { AssertPlanConsistentWithAllLogs(ft, nil, RewindPlan{}) },
+		"AssertRewoundAllLogsDB":          func(ft dafnyT) { AssertRewoundAllLogsDB(ft, nil, RewindPlan{}) },
 		"AssertTransitionConsistentWithVerified": func(ft dafnyT) {
 			AssertTransitionConsistentWithVerified(ft, nil, PendingTransition{})
 		},

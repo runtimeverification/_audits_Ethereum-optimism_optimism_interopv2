@@ -28,9 +28,11 @@ func findSealedOption(db LogsDB, number uint64) (suptypes.BlockSeal, bool, error
 
 // CheckLogsDBSealsWellFormed mirrors the function axioms of FirstSealedBlock,
 // LatestSealedBlock, and FindSealedBlock in
-// op-supernode/dafny-models/LogsDB.dfy. Option mapping: LatestSealedBlock
-// ok==false ↔ None; FirstSealedBlock/FindSealedBlock ErrFuture/ErrSkipped ↔
-// None; model BlockID ↔ eth.BlockID{Hash: seal.Hash, Number: seal.Number}.
+// op-supernode/dafny-models/LogsDB.dfy, plus the BlockLogs ghost-function
+// axiom `|BlockLogs(FirstSealedBlock().value.number).execMsgs| == 0`.
+// Option mapping: LatestSealedBlock ok==false ↔ None;
+// FirstSealedBlock/FindSealedBlock ErrFuture/ErrSkipped ↔ None; model BlockID
+// ↔ eth.BlockID{Hash: seal.Hash, Number: seal.Number}.
 // Conjuncts:
 //
 //	(0) db is non-nil and every FirstSealedBlock/FindSealedBlock error is a
@@ -51,6 +53,11 @@ func findSealedOption(db LogsDB, number uint64) (suptypes.BlockSeal, bool, error
 //	(T1) found seals' timestamps strictly increase with block number
 //	    (second FindSealedBlock axiom, consecutive found pairs cover all
 //	    pairs by transitivity of <)
+//	(X1) |BlockLogs(first.number).execMsgs| == 0 (LogsDB.dfy BlockLogs
+//	    axiom). Checked via OpenBlock(first.number): if it returns ErrSkipped
+//	    (non-genesis anchor block, standard Go behaviour) the axiom holds
+//	    vacuously; if it succeeds, len(execMsgs) must be 0; any other error
+//	    is reported as conjunct (0).
 //
 // The model does not exclude not-found gaps strictly inside the sealed range,
 // so the checker tolerates them. The scan is O(latest.number - first.number)
@@ -119,6 +126,22 @@ func CheckLogsDBSealsWellFormed(db LogsDB) error {
 		}
 	}
 
+	// X1: |BlockLogs(first.number).execMsgs| == 0 (LogsDB.dfy BlockLogs axiom).
+	_, _, execMsgs, openErr := db.OpenBlock(first.Number)
+	switch {
+	case errors.Is(openErr, suptypes.ErrSkipped):
+		// Non-genesis anchor block: the DB intentionally skips OpenBlock on the
+		// first sealed block; ErrSkipped is the observable form of the axiom.
+	case openErr == nil:
+		if len(execMsgs) != 0 {
+			errs = append(errs, violation(pred, "X1",
+				"first sealed block %d has %d executing messages, want 0", first.Number, len(execMsgs)))
+		}
+	default:
+		errs = append(errs, violation(pred, "0",
+			"OpenBlock(%d) failed: %v", first.Number, openErr))
+	}
+
 	return errors.Join(errs...)
 }
 
@@ -129,13 +152,19 @@ func AssertLogsDBSealsWellFormed(t dafnyT, db LogsDB) {
 	failOnViolation(t, CheckLogsDBSealsWellFormed(db))
 }
 
-// CheckFetchReceiptsPost mirrors the FetchReceipts postcondition
-// `ensures info.id == blockID` in
-// op-supernode/dafny-models/ChainContainer.dfy, with model info.id mapped to
-// eth.BlockID{Hash: info.Hash(), Number: info.NumberU64()}. Conjuncts:
+// CheckFetchReceiptsPost mirrors the Some-case postcondition of FetchReceipts
+// in op-supernode/dafny-models/ChainContainer.dfy. The updated model returns
+// Option<FetchReceiptsResult>; None (Go error return) is outside this checker's
+// scope. For the Some case the model ensures
+// `result.value.info == BlockInfo(blockID).value`, which implies
+// `result.value.info.id == blockID`. The BlockInfo/BlockLogs oracle-equality
+// conjuncts are oracle-dependent and are not checked here (no ChainBlockOracle
+// is available at this postcondition site).
+// Model info.id ↔ eth.BlockID{Hash: info.Hash(), Number: info.NumberU64()}.
+// Conjuncts:
 //
-//	(0) info is non-nil (mapping requirement)
-//	(1) info.id == blockID
+//	(0) info is non-nil (Some case, mapping requirement)
+//	(1) info.id == blockID (result.value.info == BlockInfo(blockID).value implies id match)
 func CheckFetchReceiptsPost(blockID eth.BlockID, info eth.BlockInfo) error {
 	const pred = "ChainContainer.dfy FetchReceipts ensures"
 	if info == nil {
