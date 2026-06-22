@@ -32,8 +32,8 @@ func dafnyChainID(n uint64) eth.ChainID {
 	return eth.ChainIDFromUInt64(n)
 }
 
-// dafnyTestParams returns ModelParams with ACTIVATION_TIMESTAMP 1000 and
-// CHAIN_IDS {1, 2}.
+// dafnyTestParams returns ModelParams with ACTIVATION_TIMESTAMP 1000,
+// CHAIN_IDS {1, 2}, and MESSAGE_EXPIRY_WINDOW defaultMessageExpiryWindow.
 func dafnyTestParams() ModelParams {
 	return ModelParams{
 		ActivationTimestamp: 1000,
@@ -41,6 +41,7 @@ func dafnyTestParams() ModelParams {
 			dafnyChainID(1): {},
 			dafnyChainID(2): {},
 		},
+		MessageExpiryWindow: defaultMessageExpiryWindow,
 	}
 }
 
@@ -62,6 +63,7 @@ func TestModelParamsFromInterop(t *testing.T) {
 		t.Parallel()
 		i := &Interop{
 			activationTimestamp: 1000,
+			messageExpiryWindow: defaultMessageExpiryWindow,
 			chains: map[eth.ChainID]cc.InteropChain{
 				dafnyChainID(1): nil,
 				dafnyChainID(2): nil,
@@ -69,6 +71,7 @@ func TestModelParamsFromInterop(t *testing.T) {
 		}
 		p := modelParamsFromInterop(i)
 		require.Equal(t, uint64(1000), p.ActivationTimestamp)
+		require.Equal(t, uint64(defaultMessageExpiryWindow), p.MessageExpiryWindow)
 		require.Equal(t, map[eth.ChainID]struct{}{
 			dafnyChainID(1): {},
 			dafnyChainID(2): {},
@@ -80,10 +83,12 @@ func TestModelParamsFromInterop(t *testing.T) {
 		i := &Interop{
 			activationTimestamp:        1000,
 			verificationStartTimestamp: 1234,
+			messageExpiryWindow:        604800,
 		}
 		i.initialized.Store(true)
 		p := modelParamsFromInterop(i)
 		require.Equal(t, uint64(1234), p.ActivationTimestamp)
+		require.Equal(t, uint64(604800), p.MessageExpiryWindow)
 		require.Empty(t, p.ChainIDs)
 	})
 }
@@ -183,7 +188,12 @@ func TestCheckValidPendingTransition(t *testing.T) {
 	t.Parallel()
 
 	p := dafnyTestParams()
-	validResult := &Result{Timestamp: 1001, L2Heads: dafnyTestHeads(1, 2)}
+	advanceResult := &Result{Timestamp: 1001, L2Heads: dafnyTestHeads(1, 2)}
+	invalidateResult := &Result{
+		Timestamp:    1001,
+		L2Heads:      dafnyTestHeads(1, 2),
+		InvalidHeads: map[eth.ChainID]InvalidHead{dafnyChainID(1): {}},
+	}
 	validPlan := &RewindPlan{RewindAtOrAfter: 1000}
 	tests := []struct {
 		name    string
@@ -191,12 +201,12 @@ func TestCheckValidPendingTransition(t *testing.T) {
 		wantErr string
 	}{
 		{
-			name:    "pass: Advance with full result",
-			pending: PendingTransition{Decision: DecisionAdvance, Result: validResult},
+			name:    "pass: Advance with full result and no invalid heads",
+			pending: PendingTransition{Decision: DecisionAdvance, Result: advanceResult},
 		},
 		{
-			name:    "pass: Invalidate with full result",
-			pending: PendingTransition{Decision: DecisionInvalidate, Result: validResult},
+			name:    "pass: Invalidate with full result and invalid heads",
+			pending: PendingTransition{Decision: DecisionInvalidate, Result: invalidateResult},
 		},
 		{
 			name:    "pass: Rewind with valid plan",
@@ -231,9 +241,25 @@ func TestCheckValidPendingTransition(t *testing.T) {
 			wantErr: "conjunct (4)",
 		},
 		{
+			name: "violation 4b: Advance with invalid heads",
+			pending: PendingTransition{
+				Decision: DecisionAdvance,
+				Result:   invalidateResult,
+			},
+			wantErr: "conjunct (4b)",
+		},
+		{
 			name:    "violation 5: Invalidate without result",
 			pending: PendingTransition{Decision: DecisionInvalidate},
 			wantErr: "conjunct (5)",
+		},
+		{
+			name: "violation 5b: Invalidate with no invalid heads",
+			pending: PendingTransition{
+				Decision: DecisionInvalidate,
+				Result:   advanceResult,
+			},
+			wantErr: "conjunct (5b)",
 		},
 		{
 			name: "violation 6: result heads missing a chain",
@@ -270,6 +296,19 @@ func TestCheckValidPendingTransitionJoinsViolations(t *testing.T) {
 	})
 	require.ErrorContains(t, err, "conjunct (2)")
 	require.ErrorContains(t, err, "conjunct (6)")
+
+	// Advance with invalid heads and incomplete chain coverage: conjuncts (4b)
+	// and (6) must both be reported.
+	err = CheckValidPendingTransition(dafnyTestParams(), PendingTransition{
+		Decision: DecisionAdvance,
+		Result: &Result{
+			Timestamp:    1001,
+			L2Heads:      dafnyTestHeads(1),
+			InvalidHeads: map[eth.ChainID]InvalidHead{dafnyChainID(1): {}},
+		},
+	})
+	require.ErrorContains(t, err, "conjunct (4b)")
+	require.ErrorContains(t, err, "conjunct (6)")
 }
 
 func TestCheckValidStepOutput(t *testing.T) {
@@ -283,6 +322,7 @@ func TestCheckValidStepOutput(t *testing.T) {
 		ChainsReady:    true,
 		BlocksAtTS:     heads,
 	}
+	invalidHead := map[eth.ChainID]InvalidHead{dafnyChainID(1): {}}
 	tests := []struct {
 		name    string
 		output  StepOutput
@@ -300,14 +340,18 @@ func TestCheckValidStepOutput(t *testing.T) {
 			obs:    obs,
 		},
 		{
-			name:   "pass: AdvanceOutput matching observation",
+			name:   "pass: AdvanceOutput matching observation with no invalid heads",
 			output: StepOutput{Decision: DecisionAdvance, Result: Result{Timestamp: 1001, L2Heads: heads}},
 			obs:    obs,
 		},
 		{
-			name:   "pass: InvalidateOutput matching observation",
-			output: StepOutput{Decision: DecisionInvalidate, Result: Result{Timestamp: 1001, L2Heads: heads}},
-			obs:    obs,
+			name: "pass: InvalidateOutput matching observation with invalid heads",
+			output: StepOutput{Decision: DecisionInvalidate, Result: Result{
+				Timestamp:    1001,
+				L2Heads:      heads,
+				InvalidHeads: invalidHead,
+			}},
+			obs: obs,
 		},
 		{
 			name:    "violation 0: decision outside the model",
@@ -342,8 +386,9 @@ func TestCheckValidStepOutput(t *testing.T) {
 		{
 			name: "violation 3: Invalidate heads equal observed blocks but miss a chain",
 			output: StepOutput{Decision: DecisionInvalidate, Result: Result{
-				Timestamp: 1001,
-				L2Heads:   dafnyTestHeads(1),
+				Timestamp:    1001,
+				L2Heads:      dafnyTestHeads(1),
+				InvalidHeads: invalidHead,
 			}},
 			obs: RoundObservation{
 				LastVerifiedTS: ptrUint64(1000),
@@ -352,6 +397,25 @@ func TestCheckValidStepOutput(t *testing.T) {
 				BlocksAtTS:     dafnyTestHeads(1),
 			},
 			wantErr: "conjunct (3)",
+		},
+		{
+			name: "violation 4: AdvanceOutput with non-empty invalid heads",
+			output: StepOutput{Decision: DecisionAdvance, Result: Result{
+				Timestamp:    1001,
+				L2Heads:      heads,
+				InvalidHeads: invalidHead,
+			}},
+			obs:     obs,
+			wantErr: "conjunct (4)",
+		},
+		{
+			name: "violation 4: InvalidateOutput with empty invalid heads",
+			output: StepOutput{Decision: DecisionInvalidate, Result: Result{
+				Timestamp: 1001,
+				L2Heads:   heads,
+			}},
+			obs:     obs,
+			wantErr: "conjunct (4)",
 		},
 	}
 
@@ -411,6 +475,14 @@ func TestCheckValidRoundObservation(t *testing.T) {
 				BlocksAtTS:  dafnyTestHeads(1),
 			},
 			wantErr: "conjunct (2)",
+		},
+		{
+			name: "violation 3: blocks present but chainsReady false",
+			obs: RoundObservation{
+				ChainsReady: false,
+				BlocksAtTS:  dafnyTestHeads(1, 2),
+			},
+			wantErr: "conjunct (3)",
 		},
 	}
 

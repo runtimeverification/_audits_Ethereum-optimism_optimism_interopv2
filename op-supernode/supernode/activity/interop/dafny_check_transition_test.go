@@ -466,7 +466,11 @@ func TestCheckTransitionConsistentWithVerified(t *testing.T) {
 			PendingTransition{Decision: DecisionRewind, Rewind: &plan}))
 		require.NoError(t, CheckTransitionConsistentWithVerified(i, PendingTransition{
 			Decision: DecisionInvalidate,
-			Result:   &Result{Timestamp: 1003, L2Heads: dafnyHeads(map[uint64]uint64{1: 103, 2: 203})},
+			Result: &Result{
+				Timestamp:    1003,
+				L2Heads:      dafnyHeads(map[uint64]uint64{1: 103, 2: 203}),
+				InvalidHeads: map[eth.ChainID]InvalidHead{dafnyChainID(1): {}},
+			},
 		}))
 		require.NoError(t, CheckTransitionConsistentWithVerified(i, dafnySyncedAdvance()))
 	})
@@ -510,7 +514,11 @@ func TestCheckTransitionConsistentWithLogs(t *testing.T) {
 			PendingTransition{Decision: DecisionRewind, Rewind: &plan}))
 		require.NoError(t, CheckTransitionConsistentWithLogs(i, PendingTransition{
 			Decision: DecisionInvalidate,
-			Result:   &Result{Timestamp: 1003, L2Heads: dafnyHeads(map[uint64]uint64{1: 103, 2: 203})},
+			Result: &Result{
+				Timestamp:    1003,
+				L2Heads:      dafnyHeads(map[uint64]uint64{1: 103, 2: 203}),
+				InvalidHeads: map[eth.ChainID]InvalidHead{dafnyChainID(1): {}},
+			},
 		}))
 		require.NoError(t, CheckTransitionConsistentWithLogs(i, dafnySyncedAdvance()))
 	})
@@ -593,7 +601,11 @@ func TestCheckPendingTransitionIsConsistent(t *testing.T) {
 		invalidate := dafnySyncedInterop(t)
 		require.NoError(t, invalidate.verifiedDB.SetPendingTransition(PendingTransition{
 			Decision: DecisionInvalidate,
-			Result:   &Result{Timestamp: 1003, L2Heads: dafnyHeads(map[uint64]uint64{1: 103, 2: 203})},
+			Result: &Result{
+				Timestamp:    1003,
+				L2Heads:      dafnyHeads(map[uint64]uint64{1: 103, 2: 203}),
+				InvalidHeads: map[eth.ChainID]InvalidHead{dafnyChainID(1): {}},
+			},
 		}))
 		require.NoError(t, CheckPendingTransitionIsConsistent(invalidate))
 
@@ -651,7 +663,11 @@ func TestCheckPendingTransitionIsConsistent(t *testing.T) {
 		i := dafnySyncedInterop(t)
 		require.NoError(t, i.verifiedDB.SetPendingTransition(PendingTransition{
 			Decision: DecisionInvalidate,
-			Result:   &Result{Timestamp: 1003, L2Heads: dafnyHeads(map[uint64]uint64{1: 103, 2: 203})},
+			Result: &Result{
+				Timestamp:    1003,
+				L2Heads:      dafnyHeads(map[uint64]uint64{1: 103, 2: 203}),
+				InvalidHeads: map[eth.ChainID]InvalidHead{dafnyChainID(1): {}},
+			},
 		}))
 		mockLogsDBFor(t, i, 2).latest = dafnyBlock(205)
 		err := CheckPendingTransitionIsConsistent(i)

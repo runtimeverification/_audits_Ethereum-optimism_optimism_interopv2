@@ -46,16 +46,21 @@ type ModelParams struct {
 	ActivationTimestamp uint64
 	// ChainIDs maps Types.dfy CHAIN_IDS: the set of chains the instance runs.
 	ChainIDs map[eth.ChainID]struct{}
+	// MessageExpiryWindow maps Types.dfy MESSAGE_EXPIRY_WINDOW: the maximum age
+	// in seconds of an initiating message referenceable by an executing message.
+	MessageExpiryWindow uint64
 }
 
 // modelParamsFromInterop derives the model ghost constants from a live
 // instance: ChainIDs from the key set of i.chains, ActivationTimestamp from
 // i.firstVerifiableTimestamp(), falling back to the protocol activation
-// timestamp before initialization completes.
+// timestamp before initialization completes. MessageExpiryWindow from
+// i.messageExpiryWindow.
 func modelParamsFromInterop(i *Interop) ModelParams {
 	p := ModelParams{
 		ActivationTimestamp: i.activationTimestamp,
 		ChainIDs:            make(map[eth.ChainID]struct{}, len(i.chains)),
+		MessageExpiryWindow: i.messageExpiryWindow,
 	}
 	for id := range i.chains {
 		p.ChainIDs[id] = struct{}{}
@@ -155,7 +160,11 @@ func AssertValidRewindPlan(t dafnyT, p ModelParams, plan RewindPlan) {
 //	(3) pending.decision == Rewind ==> ValidRewindPlan(pending.rewind.value);
 //	    skipped when (2) already failed
 //	(4) pending.decision == Advance ==> pending.result.Some?
+//	(4b) pending.decision == Advance ==> |pending.result.value.invalidHeads| == 0;
+//	     skipped when (4) already failed
 //	(5) pending.decision == Invalidate ==> pending.result.Some?
+//	(5b) pending.decision == Invalidate ==> 0 < |pending.result.value.invalidHeads|;
+//	     skipped when (5) already failed
 //	(6) pending.result.Some? ==> pending.result.value.l2Heads.Keys == CHAIN_IDS
 func CheckValidPendingTransition(p ModelParams, pending PendingTransition) error {
 	const pred = "Types.dfy ValidPendingTransition"
@@ -173,11 +182,22 @@ func CheckValidPendingTransition(p ModelParams, pending PendingTransition) error
 			errs = append(errs, fmt.Errorf("%s conjunct (3): rewind plan invalid: %w", pred, err))
 		}
 	}
-	if pending.Decision == DecisionAdvance && pending.Result == nil {
-		errs = append(errs, violation(pred, "4", "decision is Advance but result is None"))
+	if pending.Decision == DecisionAdvance {
+		if pending.Result == nil {
+			errs = append(errs, violation(pred, "4", "decision is Advance but result is None"))
+		} else if len(pending.Result.InvalidHeads) != 0 {
+			errs = append(errs, violation(pred, "4b",
+				"decision is Advance but |result.invalidHeads| == %d, want 0",
+				len(pending.Result.InvalidHeads)))
+		}
 	}
-	if pending.Decision == DecisionInvalidate && pending.Result == nil {
-		errs = append(errs, violation(pred, "5", "decision is Invalidate but result is None"))
+	if pending.Decision == DecisionInvalidate {
+		if pending.Result == nil {
+			errs = append(errs, violation(pred, "5", "decision is Invalidate but result is None"))
+		} else if len(pending.Result.InvalidHeads) == 0 {
+			errs = append(errs, violation(pred, "5b",
+				"decision is Invalidate but |result.invalidHeads| == 0, want > 0"))
+		}
 	}
 	if pending.Result != nil {
 		if err := checkChainIDCoverage(pred, "6", "result.l2Heads", pending.Result.L2Heads, p.ChainIDs); err != nil {
@@ -210,6 +230,8 @@ func AssertValidPendingTransition(t dafnyT, p ModelParams, pending PendingTransi
 //	  (1) result.timestamp == obs.nextTimestamp
 //	  (2) result.l2Heads == obs.blocksAtTS
 //	  (3) result.l2Heads.Keys == CHAIN_IDS
+//	  (4) AdvanceOutput ==> |result.invalidHeads| == 0;
+//	      InvalidateOutput ==> 0 < |result.invalidHeads|
 func CheckValidStepOutput(p ModelParams, output StepOutput, obs RoundObservation) error {
 	const pred = "Types.dfy ValidStepOutput"
 	switch output.Decision {
@@ -235,6 +257,15 @@ func CheckValidStepOutput(p ModelParams, output StepOutput, obs RoundObservation
 		if err := checkChainIDCoverage(pred, "3", "result.l2Heads", output.Result.L2Heads, p.ChainIDs); err != nil {
 			errs = append(errs, err)
 		}
+		if output.Decision == DecisionAdvance && len(output.Result.InvalidHeads) != 0 {
+			errs = append(errs, violation(pred, "4",
+				"AdvanceOutput but |result.invalidHeads| == %d, want 0",
+				len(output.Result.InvalidHeads)))
+		}
+		if output.Decision == DecisionInvalidate && len(output.Result.InvalidHeads) == 0 {
+			errs = append(errs, violation(pred, "4",
+				"InvalidateOutput but |result.invalidHeads| == 0, want > 0"))
+		}
 		return errors.Join(errs...)
 	default:
 		return violation(pred, "0", "decision %s has no Types.dfy StepOutput constructor", output.Decision)
@@ -254,9 +285,10 @@ func AssertValidStepOutput(t dafnyT, p ModelParams, output StepOutput, obs Round
 //
 //	(1) !l1Consistent ==> obs.lastVerifiedTS.Some?
 //	(2) obs.chainsReady ==> obs.blocksAtTS.Keys == CHAIN_IDS
+//	(3) 0 < |obs.blocksAtTS| ==> obs.chainsReady
 //
 // Paused is omitted from the model; a paused observeRound returns before
-// populating ChainsReady, BlocksAtTS, and L1NeedsRewind, so both conjuncts are
+// populating ChainsReady, BlocksAtTS, and L1NeedsRewind, so all conjuncts are
 // skipped when obs.Paused is true (SPEC.md model-to-Go mapping).
 func CheckValidRoundObservation(p ModelParams, obs RoundObservation) error {
 	const pred = "Types.dfy ValidRoundObservation"
@@ -272,6 +304,11 @@ func CheckValidRoundObservation(p ModelParams, obs RoundObservation) error {
 		if err := checkChainIDCoverage(pred, "2", "blocksAtTS", obs.BlocksAtTS, p.ChainIDs); err != nil {
 			errs = append(errs, err)
 		}
+	}
+	if len(obs.BlocksAtTS) > 0 && !obs.ChainsReady {
+		errs = append(errs, violation(pred, "3",
+			"0 < |blocksAtTS| (%d) but chainsReady is false",
+			len(obs.BlocksAtTS)))
 	}
 	return errors.Join(errs...)
 }

@@ -6,6 +6,7 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/stretchr/testify/require"
 
+	"github.com/ethereum-optimism/optimism/op-service/eth"
 	suptypes "github.com/ethereum-optimism/optimism/op-supervisor/supervisor/types"
 )
 
@@ -110,6 +111,7 @@ func TestCheckOutputConsistentWithVerified(t *testing.T) {
 		t.Parallel()
 		output := dafnyAdvanceOutput()
 		output.Decision = DecisionInvalidate
+		output.Result.InvalidHeads = map[eth.ChainID]InvalidHead{dafnyChainID(1): {}}
 		require.NoError(t, CheckOutputConsistentWithVerified(dafnySyncedInterop(t),
 			output, dafnySyncedObs()))
 	})
@@ -118,6 +120,7 @@ func TestCheckOutputConsistentWithVerified(t *testing.T) {
 		t.Parallel()
 		output := dafnyAdvanceOutput()
 		output.Decision = DecisionInvalidate
+		output.Result.InvalidHeads = map[eth.ChainID]InvalidHead{dafnyChainID(1): {}}
 		output.Result.Timestamp = 1005
 		obs := dafnySyncedObs()
 		obs.NextTimestamp = 1005
@@ -164,6 +167,7 @@ func TestCheckOutputConsistentWithLogs(t *testing.T) {
 			StepOutput{Decision: DecisionWait}, dafnySyncedObs()))
 		output := dafnyAdvanceOutput()
 		output.Decision = DecisionInvalidate
+		output.Result.InvalidHeads = map[eth.ChainID]InvalidHead{dafnyChainID(1): {}}
 		require.NoError(t, CheckOutputConsistentWithLogs(i, output, dafnySyncedObs()))
 	})
 
@@ -262,7 +266,8 @@ func TestCheckObservationConsistentWithVerified(t *testing.T) {
 		t.Parallel()
 		obs := dafnySyncedObs()
 		obs.NextTimestamp = 1004
-		obs.ChainsReady = false // keep conjunct (4) vacuous
+		obs.ChainsReady = false  // keep conjunct (4) vacuous
+		obs.BlocksAtTS = nil     // keep conjunct (3) vacuous (0 < |blocksAtTS| ==> chainsReady)
 		err := CheckObservationConsistentWithVerified(dafnySyncedInterop(t), obs)
 		require.ErrorContains(t, err, "conjunct (2)")
 		require.ErrorContains(t, err, "!= NextTimestamp() 1003")
