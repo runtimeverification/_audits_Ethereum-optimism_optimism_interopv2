@@ -471,3 +471,274 @@ func AssertAllVerifiedHeadsBoundedByTimestamp(t dafnyT, i *Interop, oracle Chain
 	t.Helper()
 	failOnViolation(t, CheckAllVerifiedHeadsBoundedByTimestamp(i, oracle))
 }
+
+// CheckBlocksExistedOnChain mirrors BlockExistedOnChain / BlocksExistedOnChain
+// in op-supernode/dafny-models/Interop.dfy: for every (chainID, blockID) pair
+// in blocks, the oracle must have a BlockInfo entry (chains[c].BlockInfo(b).Some?).
+// Requires oracle; skips without one (R5).
+// Conjuncts:
+//
+//	(0) oracle-dependent conjuncts skipped when oracle is nil;
+//	    blocks.Keys must be non-empty (mapping requirement)
+//	(1) forall chainID in blocks.Keys:
+//	    oracle.BlockInfo(chainID, blocks[chainID]).ok
+func CheckBlocksExistedOnChain(i *Interop, oracle ChainBlockOracle, blocks map[eth.ChainID]eth.BlockID) error {
+	const pred = "Interop.dfy BlocksExistedOnChain"
+	if oracle == nil {
+		return nil // R5: skip oracle-dependent conjuncts
+	}
+	var errs []error
+	for _, chainID := range sortedChainIDs(blocks) {
+		blockID := blocks[chainID]
+		if _, ok := oracle.BlockInfo(chainID, blockID); !ok {
+			errs = append(errs, violation(pred, "1",
+				"chain %s block %s not found in oracle", chainID, blockID))
+		}
+	}
+	return errors.Join(errs...)
+}
+
+// AssertBlocksExistedOnChain fails t when CheckBlocksExistedOnChain reports
+// violations.
+func AssertBlocksExistedOnChain(t dafnyT, i *Interop, oracle ChainBlockOracle, blocks map[eth.ChainID]eth.BlockID) {
+	t.Helper()
+	failOnViolation(t, CheckBlocksExistedOnChain(i, oracle, blocks))
+}
+
+// CheckFrontierBlocksConsistentWithTimestamp mirrors
+// FrontierBlocksConsistentWithTimestamp(ts, blocksAtTS) in
+// op-supernode/dafny-models/Interop.dfy: for every chain,
+// the oracle's BlockInfo timestamp is <= ts.
+// Requires oracle; skips without one (R5).
+// Conjuncts:
+//
+//	(0) oracle-dependent conjuncts skipped when oracle is nil
+//	(1) forall chainID in blocks.Keys:
+//	    oracle.BlockInfo(chainID, blocks[chainID]).ok &&
+//	    oracle.BlockInfo(...).timestamp <= ts
+func CheckFrontierBlocksConsistentWithTimestamp(i *Interop, oracle ChainBlockOracle, ts uint64, blocks map[eth.ChainID]eth.BlockID) error {
+	const pred = "Interop.dfy FrontierBlocksConsistentWithTimestamp"
+	if oracle == nil {
+		return nil // R5: skip oracle-dependent conjuncts
+	}
+	var errs []error
+	for _, chainID := range sortedChainIDs(blocks) {
+		blockID := blocks[chainID]
+		info, ok := oracle.BlockInfo(chainID, blockID)
+		if !ok {
+			errs = append(errs, violation(pred, "1",
+				"chain %s block %s not found in oracle", chainID, blockID))
+			continue
+		}
+		if info.Time() > ts {
+			errs = append(errs, violation(pred, "1",
+				"chain %s block %s: on-chain timestamp %d > ts %d",
+				chainID, blockID, info.Time(), ts))
+		}
+	}
+	return errors.Join(errs...)
+}
+
+// AssertFrontierBlocksConsistentWithTimestamp fails t when
+// CheckFrontierBlocksConsistentWithTimestamp reports violations.
+func AssertFrontierBlocksConsistentWithTimestamp(t dafnyT, i *Interop, oracle ChainBlockOracle, ts uint64, blocks map[eth.ChainID]eth.BlockID) {
+	t.Helper()
+	failOnViolation(t, CheckFrontierBlocksConsistentWithTimestamp(i, oracle, ts, blocks))
+}
+
+// CheckInitMsgInFrontier mirrors InitMsgInFrontier(execMsg, blocksAtTS) in
+// op-supernode/dafny-models/Interop.dfy: the initiating message m is present
+// in the frontier block for m.Chain. Requires oracle; skips without one (R5).
+//
+// Model mapping:
+//
+//	initBlock := blocksAtTS[m.Chain]
+//	initBlock.number == m.BlockNum
+//	oracle.BlockInfo(m.Chain, initBlock).ok && .timestamp == m.Timestamp
+//	oracle.BlockLogs(m.Chain, initBlock).ok &&
+//	  m.LogIdx < len(fullLogs) && fullLogs[m.LogIdx].Checksum == m.Checksum
+//
+// Conjuncts:
+//
+//	(0) oracle-dependent conjuncts skipped when oracle is nil; m.Chain must
+//	    be present in blocks
+//	(1) initBlock.number == m.BlockNum
+//	(2) oracle.BlockInfo(m.Chain, initBlock).ok && .timestamp == m.Timestamp
+//	(3) oracle.BlockLogs(m.Chain, initBlock).ok && m.LogIdx in range &&
+//	    fullLogs[m.LogIdx].Checksum == m.Checksum
+func CheckInitMsgInFrontier(i *Interop, oracle ChainBlockOracle, m ExecMsg, blocks map[eth.ChainID]eth.BlockID) error {
+	const pred = "Interop.dfy InitMsgInFrontier"
+	if oracle == nil {
+		return nil // R5: skip oracle-dependent conjuncts
+	}
+	initBlock, ok := blocks[m.Chain]
+	if !ok {
+		return violation(pred, "0", "chain %s not in frontier blocks", m.Chain)
+	}
+	// Conjunct (1): block number matches.
+	if initBlock.Number != m.BlockNum {
+		return violation(pred, "1",
+			"chain %s: frontier block number %d != message blockNum %d",
+			m.Chain, initBlock.Number, m.BlockNum)
+	}
+	// Conjunct (2): on-chain timestamp matches.
+	info, infoOK := oracle.BlockInfo(m.Chain, initBlock)
+	if !infoOK {
+		return violation(pred, "2",
+			"chain %s block %s: oracle has no BlockInfo", m.Chain, initBlock)
+	}
+	if info.Time() != m.Timestamp {
+		return violation(pred, "2",
+			"chain %s block %s: oracle timestamp %d != message timestamp %d",
+			m.Chain, initBlock, info.Time(), m.Timestamp)
+	}
+	// Conjunct (3): logIdx in range and checksum matches.
+	logs, logsOK := oracle.BlockLogs(m.Chain, initBlock)
+	if !logsOK {
+		return violation(pred, "3",
+			"chain %s block %s: oracle has no BlockLogs", m.Chain, initBlock)
+	}
+	if uint32(len(logs)) <= m.LogIdx {
+		return violation(pred, "3",
+			"chain %s block %s: logIdx %d out of range (len %d)",
+			m.Chain, initBlock, m.LogIdx, len(logs))
+	}
+	if logs[m.LogIdx].Checksum != m.Checksum {
+		return violation(pred, "3",
+			"chain %s block %s logIdx %d: checksum mismatch",
+			m.Chain, initBlock, m.LogIdx)
+	}
+	return nil
+}
+
+// AssertInitMsgInFrontier fails t when CheckInitMsgInFrontier reports
+// violations.
+func AssertInitMsgInFrontier(t dafnyT, i *Interop, oracle ChainBlockOracle, m ExecMsg, blocks map[eth.ChainID]eth.BlockID) {
+	t.Helper()
+	failOnViolation(t, CheckInitMsgInFrontier(i, oracle, m, blocks))
+}
+
+// CheckAllInitMsgsInLogsDB mirrors AllInitMsgsInLogsDB(chainID, blockID) in
+// op-supernode/dafny-models/Interop.dfy: every executing message in the oracle's
+// BlockLogs for (chainID, blockID) must satisfy InitMsgInLogsDB. Requires oracle;
+// skips without one (R5).
+// Conjuncts:
+//
+//	(0) oracle-dependent conjuncts skipped when oracle is nil; i non-nil
+//	(1) oracle.BlockLogs(chainID, blockID).ok
+//	(2) forall execMsg in BlockLogs.execMsgs:
+//	    execMsg.chainID in logsDBs.Keys && InitMsgInLogsDB(execMsg)
+func CheckAllInitMsgsInLogsDB(i *Interop, oracle ChainBlockOracle, chainID eth.ChainID, blockID eth.BlockID) error {
+	const pred = "Interop.dfy AllInitMsgsInLogsDB"
+	if oracle == nil {
+		return nil // R5: skip oracle-dependent conjuncts
+	}
+	if i == nil {
+		return violation(pred, "0", "Interop is nil")
+	}
+	logs, ok := oracle.BlockLogs(chainID, blockID)
+	if !ok {
+		return violation(pred, "1",
+			"chain %s block %s: oracle has no BlockLogs", chainID, blockID)
+	}
+	var errs []error
+	for idx, msg := range logs {
+		if err := CheckInitMsgInLogsDB(i, msg); err != nil {
+			errs = append(errs, fmt.Errorf("%s conjunct (2): execMsg[%d]: %w", pred, idx, err))
+		}
+	}
+	return errors.Join(errs...)
+}
+
+// AssertAllInitMsgsInLogsDB fails t when CheckAllInitMsgsInLogsDB reports
+// violations.
+func AssertAllInitMsgsInLogsDB(t dafnyT, i *Interop, oracle ChainBlockOracle, chainID eth.ChainID, blockID eth.BlockID) {
+	t.Helper()
+	failOnViolation(t, CheckAllInitMsgsInLogsDB(i, oracle, chainID, blockID))
+}
+
+// CheckAllInitMsgsPresent mirrors AllInitMsgsPresent(chainID, blockID, blocksAtTS)
+// in op-supernode/dafny-models/Interop.dfy: every executing message in the
+// oracle's BlockLogs for (chainID, blockID) must satisfy
+// InitMsgInFrontier(execMsg, blocks) || InitMsgInLogsDB(execMsg). Requires
+// oracle; skips without one (R5).
+// Conjuncts:
+//
+//	(0) oracle-dependent conjuncts skipped when oracle is nil; i non-nil
+//	(1) oracle.BlockLogs(chainID, blockID).ok
+//	(2) forall execMsg in BlockLogs.execMsgs:
+//	    execMsg.chainID in CHAIN_IDS &&
+//	    (InitMsgInFrontier(execMsg, blocks) || InitMsgInLogsDB(execMsg))
+func CheckAllInitMsgsPresent(i *Interop, oracle ChainBlockOracle, chainID eth.ChainID, blockID eth.BlockID, blocks map[eth.ChainID]eth.BlockID) error {
+	const pred = "Interop.dfy AllInitMsgsPresent"
+	if oracle == nil {
+		return nil // R5: skip oracle-dependent conjuncts
+	}
+	if i == nil {
+		return violation(pred, "0", "Interop is nil")
+	}
+	logs, ok := oracle.BlockLogs(chainID, blockID)
+	if !ok {
+		return violation(pred, "1",
+			"chain %s block %s: oracle has no BlockLogs", chainID, blockID)
+	}
+	var errs []error
+	for idx, msg := range logs {
+		frontierErr := CheckInitMsgInFrontier(i, oracle, msg, blocks)
+		logsdbErr := CheckInitMsgInLogsDB(i, msg)
+		if frontierErr != nil && logsdbErr != nil {
+			errs = append(errs, violation(pred, "2",
+				"execMsg[%d] chain %s block %d logIdx %d: not in frontier (%v) and not in logsDB (%v)",
+				idx, msg.Chain, msg.BlockNum, msg.LogIdx, frontierErr, logsdbErr))
+		}
+	}
+	return errors.Join(errs...)
+}
+
+// AssertAllInitMsgsPresent fails t when CheckAllInitMsgsPresent reports
+// violations.
+func AssertAllInitMsgsPresent(t dafnyT, i *Interop, oracle ChainBlockOracle, chainID eth.ChainID, blockID eth.BlockID, blocks map[eth.ChainID]eth.BlockID) {
+	t.Helper()
+	failOnViolation(t, CheckAllInitMsgsPresent(i, oracle, chainID, blockID, blocks))
+}
+
+// CheckBlockIsCrossValid mirrors BlockIsCrossValid(ts, chainID, blockID) in
+// op-supernode/dafny-models/Interop.dfy: every executing message in the
+// oracle's BlockLogs for (chainID, blockID) satisfies
+// ValidExecutingMessage(ts, chainID, execMsg). Requires oracle; skips without
+// one (R5).
+// Conjuncts:
+//
+//	(0) oracle-dependent conjuncts skipped when oracle is nil; i non-nil
+//	(1) oracle.BlockLogs(chainID, blockID).ok
+//	(2) forall execMsg in BlockLogs.execMsgs:
+//	    ValidExecutingMessage(ts, chainID, execMsg)
+func CheckBlockIsCrossValid(i *Interop, oracle ChainBlockOracle, ts uint64, chainID eth.ChainID, blockID eth.BlockID) error {
+	const pred = "Interop.dfy BlockIsCrossValid"
+	if oracle == nil {
+		return nil // R5: skip oracle-dependent conjuncts
+	}
+	if i == nil {
+		return violation(pred, "0", "Interop is nil")
+	}
+	logs, ok := oracle.BlockLogs(chainID, blockID)
+	if !ok {
+		return violation(pred, "1",
+			"chain %s block %s: oracle has no BlockLogs", chainID, blockID)
+	}
+	p := modelParamsFromInterop(i)
+	var errs []error
+	for idx, msg := range logs {
+		if err := CheckValidExecutingMessage(p, oracle, ts, chainID, msg); err != nil {
+			errs = append(errs, fmt.Errorf("%s conjunct (2): execMsg[%d]: %w", pred, idx, err))
+		}
+	}
+	return errors.Join(errs...)
+}
+
+// AssertBlockIsCrossValid fails t when CheckBlockIsCrossValid reports
+// violations.
+func AssertBlockIsCrossValid(t dafnyT, i *Interop, oracle ChainBlockOracle, ts uint64, chainID eth.ChainID, blockID eth.BlockID) {
+	t.Helper()
+	failOnViolation(t, CheckBlockIsCrossValid(i, oracle, ts, chainID, blockID))
+}
