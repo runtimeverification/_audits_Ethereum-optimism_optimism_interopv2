@@ -69,7 +69,9 @@ func execMsgFromSup(m *suptypes.ExecutingMessage) ExecMsg {
 //
 //	(0) execChain in CHAIN_IDS and m.Chain in CHAIN_IDS (mapping requirement)
 //	(1) activationTimestamp + execBlockTime <= execTimestamp
+//	    (skipped when oracle is nil or BlockTime unavailable for execChain)
 //	(2) activationTimestamp + initBlockTime <= m.Timestamp
+//	    (skipped when oracle is nil or BlockTime unavailable for m.Chain)
 //	(3) m.Timestamp <= execTimestamp (initTimestamp <= execTimestamp)
 //	(4) execTimestamp <= m.Timestamp + messageExpiryWindow
 func CheckValidExecutingMessage(p ModelParams, oracle ChainBlockOracle, execTS uint64, execChain eth.ChainID, m ExecMsg) error {
@@ -84,7 +86,9 @@ func CheckValidExecutingMessage(p ModelParams, oracle ChainBlockOracle, execTS u
 
 	var errs []error
 
-	// Conjuncts (1) and (2) require oracle.BlockTime; skip when oracle is nil.
+	// Conjuncts (1) and (2) require oracle.BlockTime; skip per-chain when
+	// oracle is nil or the chain's block time is not available in the oracle
+	// (R5: per-chain BlockTime-missing skip is intentional, not a violation).
 	if oracle != nil {
 		if execBT, ok := oracle.BlockTime(execChain); ok {
 			if p.ActivationTimestamp+execBT > execTS {
@@ -93,6 +97,7 @@ func CheckValidExecutingMessage(p ModelParams, oracle ChainBlockOracle, execTS u
 					p.ActivationTimestamp, execBT, execTS))
 			}
 		}
+		// else: execChain BlockTime unavailable — skip conjunct (1)
 		if initBT, ok := oracle.BlockTime(m.Chain); ok {
 			if p.ActivationTimestamp+initBT > m.Timestamp {
 				errs = append(errs, violation(pred, "2",
@@ -100,6 +105,7 @@ func CheckValidExecutingMessage(p ModelParams, oracle ChainBlockOracle, execTS u
 					p.ActivationTimestamp, initBT, m.Timestamp))
 			}
 		}
+		// else: m.Chain BlockTime unavailable — skip conjunct (2)
 	}
 
 	// Conjunct (3): initTimestamp <= execTimestamp.
@@ -184,7 +190,8 @@ func AssertInitMsgInLogsDB(t dafnyT, i *Interop, m ExecMsg) {
 // CheckLogsDBConsistentWithChainData mirrors LogsDBConsistentWithChainData(chainID)
 // in op-supernode/dafny-models/Interop.dfy (opaque predicate): for every sealed
 // block in the logsDB, the oracle's BlockInfo agrees on the timestamp, and the
-// oracle's BlockLogs matches what the logsDB recorded. Skips without oracle (R5).
+// oracle's BlockLogs agrees with the logsDB recorded exec msgs. Skips without
+// oracle (R5).
 // Conjuncts:
 //
 //	(0) oracle-dependent conjuncts skipped when oracle is nil; i non-nil,
@@ -194,7 +201,9 @@ func AssertInitMsgInLogsDB(t dafnyT, i *Interop, m ExecMsg) {
 //	    seal.timestamp == oracle.BlockInfo(...).value.timestamp
 //	(2) forall sealed block n in logsDB:
 //	    oracle.BlockLogs(chainID, seal.id).ok &&
-//	    logsDB.BlockLogs(n).execMsgs == oracle.BlockLogs(...) [length check only]
+//	    len(logsDB.OpenBlock(n).execMsgs) == len(oracle.BlockLogs(...))
+//	    (model: db.BlockLogs(n).execMsgs == oracle.BlockLogs; Go exposes exec
+//	    msgs via OpenBlock; ErrSkipped on the anchor block maps to 0 exec msgs)
 func CheckLogsDBConsistentWithChainData(i *Interop, oracle ChainBlockOracle, chainID eth.ChainID) error {
 	const pred = "Interop.dfy LogsDBConsistentWithChainData"
 	if i == nil {
@@ -247,9 +256,32 @@ func CheckLogsDBConsistentWithChainData(i *Interop, oracle ChainBlockOracle, cha
 				"chain %s block %d: seal.timestamp %d != oracle.BlockInfo.timestamp %d",
 				chainID, n, seal.Timestamp, info.Time()))
 		}
-		if _, logsOK := oracle.BlockLogs(chainID, seal.ID()); !logsOK {
+		oracleLogs, logsOK := oracle.BlockLogs(chainID, seal.ID())
+		if !logsOK {
 			errs = append(errs, violation(pred, "2",
 				"chain %s block %d: oracle has no BlockLogs for %s", chainID, n, seal.ID()))
+		} else {
+			// Compare exec msg count from logsDB vs oracle.
+			_, _, dbExecMsgs, openErr := db.OpenBlock(n)
+			var dbCount int
+			switch {
+			case errors.Is(openErr, suptypes.ErrSkipped):
+				dbCount = 0 // anchor block: ErrSkipped maps to 0 exec msgs
+			case openErr == nil:
+				dbCount = len(dbExecMsgs)
+			default:
+				errs = append(errs, violation(pred, "2",
+					"chain %s block %d: OpenBlock failed: %v", chainID, n, openErr))
+				if n == latest.Number {
+					break
+				}
+				continue
+			}
+			if dbCount != len(oracleLogs) {
+				errs = append(errs, violation(pred, "2",
+					"chain %s block %d: logsDB exec msg count %d != oracle count %d",
+					chainID, n, dbCount, len(oracleLogs)))
+			}
 		}
 		if n == latest.Number {
 			break
@@ -368,19 +400,24 @@ func AssertBlockSealsMatchOnChainTimestamps(t dafnyT, i *Interop, oracle ChainBl
 	failOnViolation(t, CheckBlockSealsMatchOnChainTimestamps(i, oracle))
 }
 
-// CheckAllVerifiedHeadsBoundedByTimestamp mirrors AllVerifiedHeadsBoundedByTimestamp()
-// in op-supernode/dafny-models/Interop.dfy: for every ts in
-// [activationTimestamp, lastTimestamp], the on-chain timestamp of each
-// verified l2Head is <= ts.
+// CheckAllVerifiedHeadsBoundedByTimestamp enforces the timestamp-bound portion
+// of AllVerifiedHeadsBoundedByTimestamp() in
+// op-supernode/dafny-models/Interop.dfy: for every entry present in the
+// verifiedDB, the on-chain timestamp of each verified l2Head is <= ts.
 // Requires oracle for BlockInfo; skips conjuncts without one (R5).
+//
+// Note: the completeness conjunct (verifiedDB.Has(ts) for every ts in
+// [activation, last]) is covered by CheckVerifiedDBValid (checkSequential).
+// The keys-equality conjunct (chains.Keys == l2Heads.Keys) is covered by
+// CheckVerifiedHeadsAreHighestBlocksUpToTimestamp (conjunct A). This checker
+// enforces only the oracle-dependent bound for entries that are present.
 // Conjuncts:
 //
 //	(0) oracle-dependent conjuncts skipped when oracle is nil
-//	(1) forall ts in [activation, last]:
-//	    verifiedDB.Has(ts) &&
-//	    chains.Keys == verifiedDB.Get(ts).l2Heads.Keys &&
-//	    BlocksExistedOnChain(l2Heads) &&
-//	    forall chainID: oracle.BlockInfo(chainID, l2Heads[chainID]).timestamp <= ts
+//	(1) forall ts in verifiedDB (within [activation, last]):
+//	    forall chainID in l2Heads:
+//	    oracle.BlockInfo(chainID, l2Heads[chainID]).ok &&
+//	    oracle.BlockInfo(...).timestamp <= ts
 func CheckAllVerifiedHeadsBoundedByTimestamp(i *Interop, oracle ChainBlockOracle) error {
 	const pred = "Interop.dfy AllVerifiedHeadsBoundedByTimestamp()"
 	if oracle == nil {

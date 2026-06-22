@@ -93,6 +93,14 @@ func TestCheckValidExecutingMessage(t *testing.T) {
 		require.NoError(t, CheckValidExecutingMessage(p, nil, 1100, execChain, m))
 	})
 
+	t.Run("per-chain BlockTime missing skips that conjunct (R5)", func(t *testing.T) {
+		t.Parallel()
+		// Oracle present but BlockTime unavailable for execChain and initChain:
+		// conjuncts (1) and (2) are skipped without error; (3)+(4) still enforced.
+		noBlockTime := newStubOracle() // blockTimes map is empty
+		require.NoError(t, CheckValidExecutingMessage(p, noBlockTime, 1100, execChain, m))
+	})
+
 	t.Run("conjunct 0: execChain not in CHAIN_IDS", func(t *testing.T) {
 		t.Parallel()
 		err := CheckValidExecutingMessage(p, oracle, 1100, dafnyChainID(99), m)
@@ -148,13 +156,6 @@ func TestCheckInitMsgInLogsDB(t *testing.T) {
 	// Build a mock that returns the seal for the ContainsQuery matching msg.
 	// containsModel returns true iff Contains returns (_, nil).
 	// We use a custom mock that satisfies Contains for exactly this query.
-	type containsMock struct {
-		LogsDB
-		seal   suptypes.BlockSeal
-		found  bool
-		findDB *sealsMockLogsDB
-	}
-
 	makeContainsMock := func(found bool) LogsDB {
 		base := dafnySealedMock(seal)
 		base.openExecMsg[10] = map[uint32]*suptypes.ExecutingMessage{}
@@ -267,6 +268,21 @@ func TestCheckLogsDBConsistentWithChainData(t *testing.T) {
 		// No BlockLogs
 		i := dafnyTestInterop(t)
 		i.logsDBs[chain] = dafnySealedMock(seal)
+		err := CheckLogsDBConsistentWithChainData(i, oracle, chain)
+		require.ErrorContains(t, err, "conjunct (2)")
+	})
+
+	t.Run("conjunct 2: exec msg count mismatch", func(t *testing.T) {
+		t.Parallel()
+		// logsDB.OpenBlock returns 1 exec msg; oracle has 0 — divergence.
+		oracle := newStubOracle()
+		oracle.setBlockInfo(chain, blockID, oracleBlockInfo(blockID, 1000))
+		oracle.setBlockLogs(chain, blockID, nil) // 0 oracle msgs
+		m := dafnySealedMock(seal)
+		execMsg := &suptypes.ExecutingMessage{BlockNum: 5}
+		m.openExecMsg[seal.Number] = map[uint32]*suptypes.ExecutingMessage{0: execMsg} // 1 logsDB msg
+		i := dafnyTestInterop(t)
+		i.logsDBs[chain] = m
 		err := CheckLogsDBConsistentWithChainData(i, oracle, chain)
 		require.ErrorContains(t, err, "conjunct (2)")
 	})
