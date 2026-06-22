@@ -596,6 +596,9 @@ func checkTransitionConsistentWithVerified(i *Interop, pending PendingTransition
 //	Rewind:     (R1) PlanConsistentWithVerified(pending.rewind.value)
 //	Invalidate: true (nothing to check)
 //	Advance:    (A1) AdvancesVerifiedDB(result.timestamp, result.l2Heads)
+//
+// See also: CheckTransitionConsistentWithChainState (dafny_check_crossvalidity.go)
+// mirrors the companion oracle-dependent predicate from Interop.dfy.
 func CheckTransitionConsistentWithVerified(i *Interop, pending PendingTransition) error {
 	const pred = "Interop.dfy TransitionConsistentWithVerified"
 	if i == nil {

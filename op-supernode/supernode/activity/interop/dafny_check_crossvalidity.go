@@ -742,3 +742,288 @@ func AssertBlockIsCrossValid(t dafnyT, i *Interop, oracle ChainBlockOracle, ts u
 	t.Helper()
 	failOnViolation(t, CheckBlockIsCrossValid(i, oracle, ts, chainID, blockID))
 }
+
+// CheckResultIsCrossValid mirrors ResultIsCrossValid(result) in
+// op-supernode/dafny-models/Interop.dfy. The model requires
+// |result.invalidHeads| == 0 and result.l2Heads.Keys == CHAIN_IDS; these are
+// enforced as conjuncts (0a)/(0b). For each chain, requires that
+// oracle.BlockInfo returns the on-chain timestamp, then checks
+// BlockIsCrossValid(ts, chainID, blockID) and AllInitMsgsPresent.
+// Requires oracle; skips without one (R5).
+// Conjuncts:
+//
+//	(0a) oracle-dependent conjuncts skipped when oracle is nil; i non-nil
+//	(0b) len(result.invalidHeads) == 0 (model requires)
+//	(0c) result.l2Heads.Keys == CHAIN_IDS (model requires)
+//	(1) forall chainID in CHAIN_IDS:
+//	     oracle.BlockInfo(chainID, result.l2Heads[chainID]).ok
+//	(2) forall chainID in CHAIN_IDS:
+//	     BlockIsCrossValid(oracle.BlockInfo.timestamp, chainID, blockID)
+//	(3) forall chainID in CHAIN_IDS:
+//	     AllInitMsgsPresent(chainID, blockID, result.l2Heads)
+func CheckResultIsCrossValid(i *Interop, oracle ChainBlockOracle, result Result) error {
+	const pred = "Interop.dfy ResultIsCrossValid"
+	if oracle == nil {
+		return nil // R5: skip oracle-dependent conjuncts
+	}
+	if i == nil {
+		return violation(pred, "0a", "Interop is nil")
+	}
+	if len(result.InvalidHeads) != 0 {
+		return violation(pred, "0b", "requires |result.invalidHeads| == 0 (len %d)", len(result.InvalidHeads))
+	}
+	p := modelParamsFromInterop(i)
+	if !sameChainIDKeys(result.L2Heads, p.ChainIDs) {
+		return violation(pred, "0c",
+			"requires result.l2Heads.Keys == CHAIN_IDS: %v vs %v",
+			sortedChainIDs(result.L2Heads), sortedChainIDs(p.ChainIDs))
+	}
+	var errs []error
+	for _, chainID := range sortedChainIDs(result.L2Heads) {
+		blockID := result.L2Heads[chainID]
+		info, ok := oracle.BlockInfo(chainID, blockID)
+		if !ok {
+			errs = append(errs, violation(pred, "1",
+				"chain %s block %s: oracle has no BlockInfo", chainID, blockID))
+			continue
+		}
+		ts := info.Time()
+		if err := CheckBlockIsCrossValid(i, oracle, ts, chainID, blockID); err != nil {
+			errs = append(errs, fmt.Errorf("%s conjunct (2): chain %s: %w", pred, chainID, err))
+		}
+		if err := CheckAllInitMsgsPresent(i, oracle, chainID, blockID, result.L2Heads); err != nil {
+			errs = append(errs, fmt.Errorf("%s conjunct (3): chain %s: %w", pred, chainID, err))
+		}
+	}
+	return errors.Join(errs...)
+}
+
+// AssertResultIsCrossValid fails t when CheckResultIsCrossValid reports
+// violations.
+func AssertResultIsCrossValid(t dafnyT, i *Interop, oracle ChainBlockOracle, result Result) {
+	t.Helper()
+	failOnViolation(t, CheckResultIsCrossValid(i, oracle, result))
+}
+
+// CheckTransitionIsCrossValid mirrors TransitionIsCrossValid(pending) in
+// op-supernode/dafny-models/Interop.dfy:
+// `pending.decision.Advance? ==> ResultIsCrossValid(pending.result.value)`.
+// Requires oracle; skips without one (R5).
+// Conjuncts:
+//
+//	(0) oracle-dependent conjuncts skipped when oracle is nil; i non-nil
+//	Advance: (1) ResultIsCrossValid(pending.result.value)
+//	non-Advance: true (vacuous)
+func CheckTransitionIsCrossValid(i *Interop, oracle ChainBlockOracle, pending PendingTransition) error {
+	const pred = "Interop.dfy TransitionIsCrossValid"
+	if oracle == nil {
+		return nil // R5: skip oracle-dependent conjuncts
+	}
+	if i == nil {
+		return violation(pred, "0", "Interop is nil")
+	}
+	if pending.Decision != DecisionAdvance {
+		return nil // vacuously true
+	}
+	if pending.Result == nil {
+		return violation(pred, "0", "decision is Advance but result is nil")
+	}
+	if err := CheckResultIsCrossValid(i, oracle, *pending.Result); err != nil {
+		return fmt.Errorf("%s conjunct (1): %w", pred, err)
+	}
+	return nil
+}
+
+// AssertTransitionIsCrossValid fails t when CheckTransitionIsCrossValid reports
+// violations.
+func AssertTransitionIsCrossValid(t dafnyT, i *Interop, oracle ChainBlockOracle, pending PendingTransition) {
+	t.Helper()
+	failOnViolation(t, CheckTransitionIsCrossValid(i, oracle, pending))
+}
+
+// CheckAllVerifiedCrossValid mirrors AllVerifiedCrossValid() in
+// op-supernode/dafny-models/Interop.dfy (opaque predicate):
+// for every ts in [activationTimestamp, lastTimestamp], synthesize
+// Result(ts, l1Inclusion, l2Heads, {}) from the verified entry and check
+// ResultIsCrossValid. Vacuously true when verifiedDB is empty.
+// Requires oracle; skips without one (R5).
+// Conjuncts:
+//
+//	(0) oracle-dependent conjuncts skipped when oracle is nil; i non-nil
+//	(1) forall ts in [activationTimestamp, lastTimestamp]:
+//	     ResultIsCrossValid(Result(ts, l1Inclusion, l2Heads, {}))
+func CheckAllVerifiedCrossValid(i *Interop, oracle ChainBlockOracle) error {
+	const pred = "Interop.dfy AllVerifiedCrossValid"
+	if oracle == nil {
+		return nil // R5: skip oracle-dependent conjuncts
+	}
+	if i == nil {
+		return violation(pred, "0", "Interop is nil")
+	}
+	if i.verifiedDB == nil || i.verifiedDB.db == nil {
+		return violation(pred, "0", "VerifiedDB has no underlying store")
+	}
+	lastTS, initialized := i.verifiedDB.LastTimestamp()
+	if !initialized {
+		return nil // empty: vacuously true
+	}
+	p := modelParamsFromInterop(i)
+	snapshot, err := i.verifiedDB.allVerified()
+	if err != nil {
+		return violation(pred, "0", "enumerate verified bucket: %v", err)
+	}
+	var errs []error
+	for _, ts := range slices.Sorted(maps.Keys(snapshot)) {
+		if ts < p.ActivationTimestamp || ts > lastTS {
+			continue
+		}
+		vr := snapshot[ts]
+		// Model: Result(verified.timestamp, verified.l1Inclusion, verified.l2Heads, map[])
+		result := Result{
+			Timestamp:    vr.Timestamp,
+			L1Inclusion:  vr.L1Inclusion,
+			L2Heads:      vr.L2Heads,
+			InvalidHeads: nil,
+		}
+		if err := CheckResultIsCrossValid(i, oracle, result); err != nil {
+			errs = append(errs, fmt.Errorf("%s conjunct (1): ts %d: %w", pred, ts, err))
+		}
+	}
+	return errors.Join(errs...)
+}
+
+// AssertAllVerifiedCrossValid fails t when CheckAllVerifiedCrossValid reports
+// violations.
+func AssertAllVerifiedCrossValid(t dafnyT, i *Interop, oracle ChainBlockOracle) {
+	t.Helper()
+	failOnViolation(t, CheckAllVerifiedCrossValid(i, oracle))
+}
+
+// checkChainStateCondition is the shared body of the three *ChainState checkers:
+// blocks.Keys == CHAIN_IDS && BlocksExistedOnChain(blocks) &&
+// FrontierBlocksConsistentWithTimestamp(ts, blocks). pred and keysLabel name
+// the calling predicate and conjunct label for the keys-equality check.
+func checkChainStateCondition(i *Interop, oracle ChainBlockOracle, pred, keysLabel string, ts uint64, blocks map[eth.ChainID]eth.BlockID) error {
+	p := modelParamsFromInterop(i)
+	var errs []error
+	if !sameChainIDKeys(blocks, p.ChainIDs) {
+		errs = append(errs, violation(pred, keysLabel,
+			"blocks.Keys %v != CHAIN_IDS %v",
+			sortedChainIDs(blocks), sortedChainIDs(p.ChainIDs)))
+	}
+	if err := CheckBlocksExistedOnChain(i, oracle, blocks); err != nil {
+		errs = append(errs, fmt.Errorf("%s: %w", pred, err))
+	}
+	if err := CheckFrontierBlocksConsistentWithTimestamp(i, oracle, ts, blocks); err != nil {
+		errs = append(errs, fmt.Errorf("%s: %w", pred, err))
+	}
+	return errors.Join(errs...)
+}
+
+// CheckTransitionConsistentWithChainState mirrors
+// TransitionConsistentWithChainState(pending) in
+// op-supernode/dafny-models/Interop.dfy:
+// `pending.decision.Advance? ==> BlocksExistedOnChain(l2Heads) &&
+// FrontierBlocksConsistentWithTimestamp(timestamp, l2Heads)`.
+// Requires oracle; skips without one (R5).
+// Conjuncts:
+//
+//	(0) oracle-dependent conjuncts skipped when oracle is nil; i non-nil
+//	Advance: (1) result.l2Heads.Keys == CHAIN_IDS
+//	         (2) BlocksExistedOnChain(result.l2Heads)
+//	         (3) FrontierBlocksConsistentWithTimestamp(result.timestamp, result.l2Heads)
+//	non-Advance: true (vacuous)
+func CheckTransitionConsistentWithChainState(i *Interop, oracle ChainBlockOracle, pending PendingTransition) error {
+	const pred = "Interop.dfy TransitionConsistentWithChainState"
+	if oracle == nil {
+		return nil // R5: skip oracle-dependent conjuncts
+	}
+	if i == nil {
+		return violation(pred, "0", "Interop is nil")
+	}
+	if pending.Decision != DecisionAdvance {
+		return nil // vacuously true
+	}
+	if pending.Result == nil {
+		return violation(pred, "0", "decision is Advance but result is nil")
+	}
+	return checkChainStateCondition(i, oracle, pred, "1", pending.Result.Timestamp, pending.Result.L2Heads)
+}
+
+// AssertTransitionConsistentWithChainState fails t when
+// CheckTransitionConsistentWithChainState reports violations.
+func AssertTransitionConsistentWithChainState(t dafnyT, i *Interop, oracle ChainBlockOracle, pending PendingTransition) {
+	t.Helper()
+	failOnViolation(t, CheckTransitionConsistentWithChainState(i, oracle, pending))
+}
+
+// CheckOutputConsistentWithChainState mirrors
+// OutputConsistentWithChainState(output, obs) in
+// op-supernode/dafny-models/Interop.dfy:
+// `output.AdvanceOutput? ==> l2Heads.Keys == CHAIN_IDS &&
+// BlocksExistedOnChain(l2Heads) &&
+// FrontierBlocksConsistentWithTimestamp(result.timestamp, l2Heads)`.
+// Requires oracle; skips without one (R5).
+// Conjuncts:
+//
+//	(0) oracle-dependent conjuncts skipped when oracle is nil; i non-nil
+//	AdvanceOutput: (1) result.l2Heads.Keys == CHAIN_IDS
+//	               (2) BlocksExistedOnChain(result.l2Heads)
+//	               (3) FrontierBlocksConsistentWithTimestamp(result.timestamp, result.l2Heads)
+//	non-Advance:   true (vacuous)
+func CheckOutputConsistentWithChainState(i *Interop, oracle ChainBlockOracle, output StepOutput, obs RoundObservation) error {
+	const pred = "Interop.dfy OutputConsistentWithChainState"
+	if oracle == nil {
+		return nil // R5: skip oracle-dependent conjuncts
+	}
+	if i == nil {
+		return violation(pred, "0", "Interop is nil")
+	}
+	if output.Decision != DecisionAdvance {
+		return nil // vacuously true
+	}
+	return checkChainStateCondition(i, oracle, pred, "1", output.Result.Timestamp, output.Result.L2Heads)
+}
+
+// AssertOutputConsistentWithChainState fails t when
+// CheckOutputConsistentWithChainState reports violations.
+func AssertOutputConsistentWithChainState(t dafnyT, i *Interop, oracle ChainBlockOracle, output StepOutput, obs RoundObservation) {
+	t.Helper()
+	failOnViolation(t, CheckOutputConsistentWithChainState(i, oracle, output, obs))
+}
+
+// CheckObservationConsistentWithChainState mirrors
+// ObservationConsistentWithChainState(obs) in
+// op-supernode/dafny-models/Interop.dfy:
+// `0 < |obs.blocksAtTS| ==> obs.blocksAtTS.Keys == CHAIN_IDS &&
+// BlocksExistedOnChain(obs.blocksAtTS) &&
+// FrontierBlocksConsistentWithTimestamp(obs.nextTimestamp, obs.blocksAtTS)`.
+// Requires oracle; skips without one (R5).
+// Conjuncts:
+//
+//	(0) oracle-dependent conjuncts skipped when oracle is nil; i non-nil
+//	0 < |obs.blocksAtTS|:
+//	  (1) obs.blocksAtTS.Keys == CHAIN_IDS
+//	  (2) BlocksExistedOnChain(obs.blocksAtTS)
+//	  (3) FrontierBlocksConsistentWithTimestamp(obs.nextTimestamp, obs.blocksAtTS)
+//	|obs.blocksAtTS| == 0: true (vacuous)
+func CheckObservationConsistentWithChainState(i *Interop, oracle ChainBlockOracle, obs RoundObservation) error {
+	const pred = "Interop.dfy ObservationConsistentWithChainState"
+	if oracle == nil {
+		return nil // R5: skip oracle-dependent conjuncts
+	}
+	if i == nil {
+		return violation(pred, "0", "Interop is nil")
+	}
+	if len(obs.BlocksAtTS) == 0 {
+		return nil // vacuously true
+	}
+	return checkChainStateCondition(i, oracle, pred, "1", obs.NextTimestamp, obs.BlocksAtTS)
+}
+
+// AssertObservationConsistentWithChainState fails t when
+// CheckObservationConsistentWithChainState reports violations.
+func AssertObservationConsistentWithChainState(t dafnyT, i *Interop, oracle ChainBlockOracle, obs RoundObservation) {
+	t.Helper()
+	failOnViolation(t, CheckObservationConsistentWithChainState(i, oracle, obs))
+}

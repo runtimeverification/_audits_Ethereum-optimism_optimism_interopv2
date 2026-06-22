@@ -114,6 +114,9 @@ func checkOutputConsistentWithVerified(i *Interop, output StepOutput, obs RoundO
 //	  (A1) AdvancesVerifiedDB(result.timestamp, result.l2Heads)
 //	InvalidateOutput(result):
 //	  (I1) result.timestamp == NextTimestamp()
+//
+// See also: CheckOutputConsistentWithChainState (dafny_check_crossvalidity.go)
+// mirrors the companion oracle-dependent predicate from Interop.dfy.
 func CheckOutputConsistentWithVerified(i *Interop, output StepOutput, obs RoundObservation) error {
 	const pred = "Interop.dfy OutputConsistentWithVerified"
 	if i == nil {
@@ -259,6 +262,9 @@ func checkObservationConsistentWithVerified(i *Interop, obs RoundObservation) er
 //	    obs.lastVerifiedTS.value - 1 in verifiedDB.db
 //	(4) obs.chainsReady && l2sConsistent && l1Consistent ==>
 //	    AdvancesVerifiedDB(obs.nextTimestamp, obs.blocksAtTS)
+//
+// See also: CheckObservationConsistentWithChainState (dafny_check_crossvalidity.go)
+// mirrors the companion oracle-dependent predicate from Interop.dfy.
 func CheckObservationConsistentWithVerified(i *Interop, obs RoundObservation) error {
 	const pred = "Interop.dfy ObservationConsistentWithVerified"
 	if i == nil {

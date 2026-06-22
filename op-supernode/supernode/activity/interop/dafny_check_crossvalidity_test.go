@@ -941,6 +941,468 @@ func TestCheckBlockIsCrossValid(t *testing.T) {
 	})
 }
 
+// ---- T13: result/transition level and *ChainState predicates ----
+
+// makeValidResult builds a Result with CHAIN_IDS keys, no invalidHeads, at the
+// given timestamp using the same block IDs as frontierBlocks.
+func makeValidResult(ts, num1, num2 uint64) Result {
+	return Result{
+		Timestamp: ts,
+		L2Heads: map[eth.ChainID]eth.BlockID{
+			dafnyChainID(1): frontierBlockID(1, num1),
+			dafnyChainID(2): frontierBlockID(2, num2),
+		},
+	}
+}
+
+// makeResultOracle builds a stubOracle with BlockInfo + BlockLogs entries for
+// both chains at the given block numbers and timestamp (no exec msgs).
+func makeResultOracle(ts, num1, num2 uint64) *stubOracle {
+	oracle := newStubOracle()
+	id1 := frontierBlockID(1, num1)
+	id2 := frontierBlockID(2, num2)
+	oracle.setBlockInfo(dafnyChainID(1), id1, oracleBlockInfo(id1, ts))
+	oracle.setBlockInfo(dafnyChainID(2), id2, oracleBlockInfo(id2, ts))
+	oracle.setBlockLogs(dafnyChainID(1), id1, nil)
+	oracle.setBlockLogs(dafnyChainID(2), id2, nil)
+	return oracle
+}
+
+// dafnyContainsInterop builds an Interop where both chain logsDBs support
+// Contains (returning not-found). Use in tests that exercise CheckResultIsCrossValid
+// or any checker that may call CheckInitMsgInLogsDB.
+func dafnyContainsInterop(t *testing.T) *Interop {
+	t.Helper()
+	i := dafnyTestInterop(t)
+	i.logsDBs[dafnyChainID(1)] = &containsMockLogsDB{sealsMockLogsDB: dafnySealedMock(), found: false}
+	i.logsDBs[dafnyChainID(2)] = &containsMockLogsDB{sealsMockLogsDB: dafnySealedMock(), found: false}
+	return i
+}
+
+// TestCheckResultIsCrossValid covers nil-oracle skip, pass, and violations.
+func TestCheckResultIsCrossValid(t *testing.T) {
+	t.Parallel()
+
+	result := makeValidResult(1050, 10, 20)
+
+	t.Run("nil oracle skips (R5)", func(t *testing.T) {
+		t.Parallel()
+		i := dafnyTestInterop(t)
+		require.NoError(t, CheckResultIsCrossValid(i, nil, result))
+	})
+
+	t.Run("pass: valid result", func(t *testing.T) {
+		t.Parallel()
+		// Use containsInterop: CheckAllInitMsgsPresent may call Contains on the logsDBs.
+		oracle := makeResultOracle(1050, 10, 20)
+		i := dafnyContainsInterop(t)
+		require.NoError(t, CheckResultIsCrossValid(i, oracle, result))
+	})
+
+	t.Run("conjunct 0b: invalidHeads non-empty", func(t *testing.T) {
+		t.Parallel()
+		oracle := makeResultOracle(1050, 10, 20)
+		i := dafnyContainsInterop(t)
+		bad := result
+		bad.InvalidHeads = map[eth.ChainID]InvalidHead{dafnyChainID(1): {}}
+		err := CheckResultIsCrossValid(i, oracle, bad)
+		require.ErrorContains(t, err, "conjunct (0b)")
+	})
+
+	t.Run("conjunct 0c: l2Heads.Keys != CHAIN_IDS", func(t *testing.T) {
+		t.Parallel()
+		oracle := makeResultOracle(1050, 10, 20)
+		i := dafnyContainsInterop(t)
+		bad := Result{Timestamp: 1050, L2Heads: map[eth.ChainID]eth.BlockID{dafnyChainID(1): frontierBlockID(1, 10)}}
+		err := CheckResultIsCrossValid(i, oracle, bad)
+		require.ErrorContains(t, err, "conjunct (0c)")
+	})
+
+	t.Run("conjunct 1: oracle missing BlockInfo", func(t *testing.T) {
+		t.Parallel()
+		oracle := newStubOracle() // no BlockInfo entries
+		oracle.setBlockLogs(dafnyChainID(1), frontierBlockID(1, 10), nil)
+		oracle.setBlockLogs(dafnyChainID(2), frontierBlockID(2, 20), nil)
+		i := dafnyContainsInterop(t)
+		err := CheckResultIsCrossValid(i, oracle, result)
+		require.ErrorContains(t, err, "conjunct (1)")
+	})
+
+	t.Run("conjunct 2: BlockIsCrossValid fails (exec msg violates ValidExecutingMessage)", func(t *testing.T) {
+		t.Parallel()
+		// A bad exec msg has initTimestamp > execTimestamp (conjunct 3 of ValidExecutingMessage).
+		// BlockIsCrossValid uses the block's on-chain timestamp (1050) as execTS;
+		// badMsg.Timestamp=2000 > 1050 triggers the violation.
+		// CheckAllInitMsgsPresent also runs; all logsDBs must support Contains.
+		oracle := makeResultOracle(1050, 10, 20)
+		id1 := frontierBlockID(1, 10)
+		badMsg := ExecMsg{Chain: dafnyChainID(2), BlockNum: 5, LogIdx: 0, Timestamp: 2000}
+		oracle.setBlockLogs(dafnyChainID(1), id1, []ExecMsg{badMsg})
+		i := dafnyContainsInterop(t)
+		err := CheckResultIsCrossValid(i, oracle, result)
+		require.ErrorContains(t, err, "conjunct (2)")
+	})
+
+	t.Run("conjunct 0a: nil Interop", func(t *testing.T) {
+		t.Parallel()
+		oracle := makeResultOracle(1050, 10, 20)
+		err := CheckResultIsCrossValid(nil, oracle, result)
+		require.ErrorContains(t, err, "conjunct (0a)")
+	})
+}
+
+// TestCheckTransitionIsCrossValid covers nil-oracle skip, pass, and violation.
+func TestCheckTransitionIsCrossValid(t *testing.T) {
+	t.Parallel()
+
+	advancePending := PendingTransition{
+		Decision: DecisionAdvance,
+		Result:   func() *Result { r := makeValidResult(1050, 10, 20); return &r }(),
+	}
+
+	t.Run("nil oracle skips (R5)", func(t *testing.T) {
+		t.Parallel()
+		i := dafnyTestInterop(t)
+		require.NoError(t, CheckTransitionIsCrossValid(i, nil, advancePending))
+	})
+
+	t.Run("pass: non-Advance decision vacuously true", func(t *testing.T) {
+		t.Parallel()
+		oracle := newStubOracle()
+		i := dafnyTestInterop(t)
+		require.NoError(t, CheckTransitionIsCrossValid(i, oracle, PendingTransition{Decision: DecisionWait}))
+	})
+
+	t.Run("pass: Advance with valid result", func(t *testing.T) {
+		t.Parallel()
+		oracle := makeResultOracle(1050, 10, 20)
+		i := dafnyContainsInterop(t)
+		require.NoError(t, CheckTransitionIsCrossValid(i, oracle, advancePending))
+	})
+
+	t.Run("conjunct 1: Advance with invalid result", func(t *testing.T) {
+		t.Parallel()
+		oracle := makeResultOracle(1050, 10, 20)
+		id1 := frontierBlockID(1, 10)
+		badMsg := ExecMsg{Chain: dafnyChainID(2), BlockNum: 5, LogIdx: 0, Timestamp: 2000}
+		oracle.setBlockLogs(dafnyChainID(1), id1, []ExecMsg{badMsg})
+		i := dafnyContainsInterop(t)
+		err := CheckTransitionIsCrossValid(i, oracle, advancePending)
+		require.ErrorContains(t, err, "conjunct (1)")
+	})
+}
+
+// TestCheckAllVerifiedCrossValid covers nil-oracle skip, pass, and violation.
+func TestCheckAllVerifiedCrossValid(t *testing.T) {
+	t.Parallel()
+
+	t.Run("nil oracle skips (R5)", func(t *testing.T) {
+		t.Parallel()
+		i := dafnySyncedInterop(t)
+		require.NoError(t, CheckAllVerifiedCrossValid(i, nil))
+	})
+
+	t.Run("pass: empty verifiedDB", func(t *testing.T) {
+		t.Parallel()
+		oracle := newStubOracle()
+		i := dafnyTestInterop(t)
+		require.NoError(t, CheckAllVerifiedCrossValid(i, oracle))
+	})
+
+	t.Run("pass: all verified entries cross-valid", func(t *testing.T) {
+		t.Parallel()
+		// dafnySyncedInterop has entries at ts 1000..1002, chain1 heads 100..102,
+		// chain2 heads 200..202. Populate oracle with matching BlockInfo + empty logs.
+		oracle := newStubOracle()
+		for off := uint64(0); off <= 2; off++ {
+			id1 := eth.BlockID{Hash: common.HexToHash("0xaa"), Number: 100 + off}
+			id2 := eth.BlockID{Hash: common.HexToHash("0xaa"), Number: 200 + off}
+			oracle.setBlockInfo(dafnyChainID(1), id1, oracleBlockInfo(id1, 1000+off))
+			oracle.setBlockInfo(dafnyChainID(2), id2, oracleBlockInfo(id2, 1000+off))
+			oracle.setBlockLogs(dafnyChainID(1), id1, nil)
+			oracle.setBlockLogs(dafnyChainID(2), id2, nil)
+		}
+		i := dafnySyncedInterop(t)
+		require.NoError(t, CheckAllVerifiedCrossValid(i, oracle))
+	})
+
+	t.Run("conjunct 1: one ts has cross-invalid exec msg", func(t *testing.T) {
+		t.Parallel()
+		oracle := newStubOracle()
+		for off := uint64(0); off <= 2; off++ {
+			id1 := eth.BlockID{Hash: common.HexToHash("0xaa"), Number: 100 + off}
+			id2 := eth.BlockID{Hash: common.HexToHash("0xaa"), Number: 200 + off}
+			oracle.setBlockInfo(dafnyChainID(1), id1, oracleBlockInfo(id1, 1000+off))
+			oracle.setBlockInfo(dafnyChainID(2), id2, oracleBlockInfo(id2, 1000+off))
+			oracle.setBlockLogs(dafnyChainID(2), id2, nil)
+			if off == 1 {
+				// at ts=1001: chain 1 block 101 has a bad exec msg (initTS > execTS).
+				// CheckAllInitMsgsPresent will try Contains on chain 2's logsDB for
+				// the bad msg; we override both logsDBs with containsMocks.
+				badMsg := ExecMsg{Chain: dafnyChainID(2), BlockNum: 5, LogIdx: 0, Timestamp: 2000}
+				oracle.setBlockLogs(dafnyChainID(1), id1, []ExecMsg{badMsg})
+			} else {
+				oracle.setBlockLogs(dafnyChainID(1), id1, nil)
+			}
+		}
+		i := dafnySyncedInterop(t)
+		// Replace logsDBs with containsMocks so Contains doesn't panic.
+		i.logsDBs[dafnyChainID(1)] = &containsMockLogsDB{sealsMockLogsDB: dafnySealedMock(), found: false}
+		i.logsDBs[dafnyChainID(2)] = &containsMockLogsDB{sealsMockLogsDB: dafnySealedMock(), found: false}
+		err := CheckAllVerifiedCrossValid(i, oracle)
+		require.ErrorContains(t, err, "conjunct (1)")
+	})
+}
+
+// TestCheckTransitionConsistentWithChainState covers nil-oracle, pass, and violations.
+func TestCheckTransitionConsistentWithChainState(t *testing.T) {
+	t.Parallel()
+
+	advancePending := PendingTransition{
+		Decision: DecisionAdvance,
+		Result:   func() *Result { r := makeValidResult(1050, 10, 20); return &r }(),
+	}
+
+	t.Run("nil oracle skips (R5)", func(t *testing.T) {
+		t.Parallel()
+		i := dafnyTestInterop(t)
+		require.NoError(t, CheckTransitionConsistentWithChainState(i, nil, advancePending))
+	})
+
+	t.Run("pass: non-Advance vacuously true", func(t *testing.T) {
+		t.Parallel()
+		oracle := newStubOracle()
+		i := dafnyTestInterop(t)
+		require.NoError(t, CheckTransitionConsistentWithChainState(i, oracle, PendingTransition{Decision: DecisionRewind}))
+	})
+
+	t.Run("pass: Advance with blocks on-chain", func(t *testing.T) {
+		t.Parallel()
+		oracle := makeResultOracle(1050, 10, 20)
+		i := dafnyTestInterop(t)
+		require.NoError(t, CheckTransitionConsistentWithChainState(i, oracle, advancePending))
+	})
+
+	t.Run("conjunct 1: l2Heads.Keys != CHAIN_IDS", func(t *testing.T) {
+		t.Parallel()
+		oracle := newStubOracle()
+		i := dafnyTestInterop(t)
+		bad := PendingTransition{
+			Decision: DecisionAdvance,
+			Result: &Result{
+				Timestamp: 1050,
+				L2Heads:   map[eth.ChainID]eth.BlockID{dafnyChainID(1): frontierBlockID(1, 10)},
+			},
+		}
+		err := CheckTransitionConsistentWithChainState(i, oracle, bad)
+		require.ErrorContains(t, err, "conjunct (1)")
+	})
+
+	t.Run("conjunct 2: block not in oracle (BlocksExistedOnChain)", func(t *testing.T) {
+		t.Parallel()
+		oracle := newStubOracle() // no BlockInfo entries
+		i := dafnyTestInterop(t)
+		err := CheckTransitionConsistentWithChainState(i, oracle, advancePending)
+		require.ErrorContains(t, err, "conjunct (1)")
+	})
+
+	t.Run("conjunct 3: block timestamp > frontier ts", func(t *testing.T) {
+		t.Parallel()
+		oracle := newStubOracle()
+		id1 := frontierBlockID(1, 10)
+		id2 := frontierBlockID(2, 20)
+		// Block timestamps exceed the result timestamp 1050.
+		oracle.setBlockInfo(dafnyChainID(1), id1, oracleBlockInfo(id1, 2000))
+		oracle.setBlockInfo(dafnyChainID(2), id2, oracleBlockInfo(id2, 2000))
+		i := dafnyTestInterop(t)
+		err := CheckTransitionConsistentWithChainState(i, oracle, advancePending)
+		require.ErrorContains(t, err, "conjunct (1)")
+	})
+}
+
+// TestCheckOutputConsistentWithChainState covers nil-oracle skip, pass, and violation.
+func TestCheckOutputConsistentWithChainState(t *testing.T) {
+	t.Parallel()
+
+	obs := RoundObservation{NextTimestamp: 1050}
+	advanceOutput := StepOutput{Decision: DecisionAdvance, Result: makeValidResult(1050, 10, 20)}
+
+	t.Run("nil oracle skips (R5)", func(t *testing.T) {
+		t.Parallel()
+		i := dafnyTestInterop(t)
+		require.NoError(t, CheckOutputConsistentWithChainState(i, nil, advanceOutput, obs))
+	})
+
+	t.Run("pass: non-Advance vacuously true", func(t *testing.T) {
+		t.Parallel()
+		oracle := newStubOracle()
+		i := dafnyTestInterop(t)
+		require.NoError(t, CheckOutputConsistentWithChainState(i, oracle, StepOutput{Decision: DecisionWait}, obs))
+	})
+
+	t.Run("pass: Advance with valid result", func(t *testing.T) {
+		t.Parallel()
+		oracle := makeResultOracle(1050, 10, 20)
+		i := dafnyTestInterop(t)
+		require.NoError(t, CheckOutputConsistentWithChainState(i, oracle, advanceOutput, obs))
+	})
+
+	t.Run("conjunct 1: l2Heads.Keys != CHAIN_IDS", func(t *testing.T) {
+		t.Parallel()
+		oracle := newStubOracle()
+		i := dafnyTestInterop(t)
+		bad := StepOutput{
+			Decision: DecisionAdvance,
+			Result:   Result{Timestamp: 1050, L2Heads: map[eth.ChainID]eth.BlockID{dafnyChainID(1): frontierBlockID(1, 10)}},
+		}
+		err := CheckOutputConsistentWithChainState(i, oracle, bad, obs)
+		require.ErrorContains(t, err, "conjunct (1)")
+	})
+
+	t.Run("conjunct 2: block not in oracle", func(t *testing.T) {
+		t.Parallel()
+		oracle := newStubOracle() // empty oracle: no BlockInfo
+		i := dafnyTestInterop(t)
+		err := CheckOutputConsistentWithChainState(i, oracle, advanceOutput, obs)
+		require.ErrorContains(t, err, "conjunct (1)")
+	})
+}
+
+// TestCheckObservationConsistentWithChainState covers nil-oracle skip, pass, and violation.
+func TestCheckObservationConsistentWithChainState(t *testing.T) {
+	t.Parallel()
+
+	obsWithBlocks := RoundObservation{
+		NextTimestamp: 1050,
+		BlocksAtTS:    frontierBlocks(10, 20),
+	}
+
+	t.Run("nil oracle skips (R5)", func(t *testing.T) {
+		t.Parallel()
+		i := dafnyTestInterop(t)
+		require.NoError(t, CheckObservationConsistentWithChainState(i, nil, obsWithBlocks))
+	})
+
+	t.Run("pass: empty blocksAtTS vacuously true", func(t *testing.T) {
+		t.Parallel()
+		oracle := newStubOracle()
+		i := dafnyTestInterop(t)
+		emptyObs := RoundObservation{NextTimestamp: 1050}
+		require.NoError(t, CheckObservationConsistentWithChainState(i, oracle, emptyObs))
+	})
+
+	t.Run("pass: blocks on-chain with matching timestamps", func(t *testing.T) {
+		t.Parallel()
+		oracle := makeResultOracle(1050, 10, 20)
+		i := dafnyTestInterop(t)
+		require.NoError(t, CheckObservationConsistentWithChainState(i, oracle, obsWithBlocks))
+	})
+
+	t.Run("conjunct 1: blocksAtTS.Keys != CHAIN_IDS", func(t *testing.T) {
+		t.Parallel()
+		oracle := newStubOracle()
+		id1 := frontierBlockID(1, 10)
+		oracle.setBlockInfo(dafnyChainID(1), id1, oracleBlockInfo(id1, 1050))
+		i := dafnyTestInterop(t)
+		bad := RoundObservation{
+			NextTimestamp: 1050,
+			BlocksAtTS:    map[eth.ChainID]eth.BlockID{dafnyChainID(1): id1}, // missing chain 2
+		}
+		err := CheckObservationConsistentWithChainState(i, oracle, bad)
+		require.ErrorContains(t, err, "conjunct (1)")
+	})
+
+	t.Run("conjunct 2: block not in oracle", func(t *testing.T) {
+		t.Parallel()
+		oracle := newStubOracle() // empty: no BlockInfo
+		i := dafnyTestInterop(t)
+		err := CheckObservationConsistentWithChainState(i, oracle, obsWithBlocks)
+		require.ErrorContains(t, err, "conjunct (1)")
+	})
+
+	t.Run("conjunct 3: block timestamp > nextTimestamp", func(t *testing.T) {
+		t.Parallel()
+		oracle := newStubOracle()
+		id1 := frontierBlockID(1, 10)
+		id2 := frontierBlockID(2, 20)
+		oracle.setBlockInfo(dafnyChainID(1), id1, oracleBlockInfo(id1, 2000))
+		oracle.setBlockInfo(dafnyChainID(2), id2, oracleBlockInfo(id2, 2000))
+		i := dafnyTestInterop(t)
+		err := CheckObservationConsistentWithChainState(i, oracle, obsWithBlocks)
+		require.ErrorContains(t, err, "conjunct (1)")
+	})
+}
+
+// TestT13AssertWrappers verifies the Assert* wrappers for T13.
+func TestT13AssertWrappers(t *testing.T) {
+	t.Parallel()
+
+	result := makeValidResult(1050, 10, 20)
+	advancePending := PendingTransition{Decision: DecisionAdvance, Result: &result}
+	advanceOutput := StepOutput{Decision: DecisionAdvance, Result: result}
+	obs := RoundObservation{NextTimestamp: 1050}
+
+	t.Run("AssertResultIsCrossValid nil-oracle pass", func(t *testing.T) {
+		t.Parallel()
+		ft := &fakeDafnyT{}
+		i := dafnyContainsInterop(t)
+		AssertResultIsCrossValid(ft, i, nil, result)
+		require.False(t, ft.failNowCalled)
+	})
+
+	t.Run("AssertTransitionIsCrossValid nil-oracle pass", func(t *testing.T) {
+		t.Parallel()
+		ft := &fakeDafnyT{}
+		i := dafnyContainsInterop(t)
+		AssertTransitionIsCrossValid(ft, i, nil, advancePending)
+		require.False(t, ft.failNowCalled)
+	})
+
+	t.Run("AssertAllVerifiedCrossValid nil-oracle pass", func(t *testing.T) {
+		t.Parallel()
+		ft := &fakeDafnyT{}
+		i := dafnySyncedInterop(t)
+		AssertAllVerifiedCrossValid(ft, i, nil)
+		require.False(t, ft.failNowCalled)
+	})
+
+	t.Run("AssertTransitionConsistentWithChainState nil-oracle pass", func(t *testing.T) {
+		t.Parallel()
+		ft := &fakeDafnyT{}
+		i := dafnyContainsInterop(t)
+		AssertTransitionConsistentWithChainState(ft, i, nil, advancePending)
+		require.False(t, ft.failNowCalled)
+	})
+
+	t.Run("AssertOutputConsistentWithChainState nil-oracle pass", func(t *testing.T) {
+		t.Parallel()
+		ft := &fakeDafnyT{}
+		i := dafnyContainsInterop(t)
+		AssertOutputConsistentWithChainState(ft, i, nil, advanceOutput, obs)
+		require.False(t, ft.failNowCalled)
+	})
+
+	t.Run("AssertObservationConsistentWithChainState nil-oracle pass", func(t *testing.T) {
+		t.Parallel()
+		ft := &fakeDafnyT{}
+		i := dafnyContainsInterop(t)
+		emptyObs := RoundObservation{NextTimestamp: 1050}
+		AssertObservationConsistentWithChainState(ft, i, nil, emptyObs)
+		require.False(t, ft.failNowCalled)
+	})
+
+	t.Run("AssertResultIsCrossValid violation on invalidHeads", func(t *testing.T) {
+		t.Parallel()
+		ft := &fakeDafnyT{}
+		oracle := makeResultOracle(1050, 10, 20)
+		i := dafnyContainsInterop(t)
+		bad := result
+		bad.InvalidHeads = map[eth.ChainID]InvalidHead{dafnyChainID(1): {}}
+		AssertResultIsCrossValid(ft, i, oracle, bad)
+		require.True(t, ft.failNowCalled)
+	})
+}
+
 // TestT12AssertWrappers checks the Assert* wrappers introduced in T12.
 func TestT12AssertWrappers(t *testing.T) {
 	t.Parallel()
