@@ -1,6 +1,7 @@
 package interop
 
 import (
+	"math/big"
 	"testing"
 
 	"github.com/ethereum/go-ethereum/common"
@@ -1467,5 +1468,103 @@ func TestT12AssertWrappers(t *testing.T) {
 		i := dafnyTestInterop(t)
 		AssertBlockIsCrossValid(ft, i, nil, ts, chain, blockID)
 		require.False(t, ft.failNowCalled)
+	})
+}
+
+// TestOraclePathEndToEnd drives CheckAllVerifiedCrossValid and CheckResultIsCrossValid
+// against a real *Interop produced by the harness after actual advance cycles,
+// and also demonstrates the nil-oracle skip semantics on that same instance (R5).
+//
+// The harness uses mockChainContainer which returns block {Number: ts, Hash: hash(ts)}
+// for every requested timestamp, so verified entries have l2Heads[chain] = {Number: ts,
+// Hash: hash(ts)}. The stub oracle maps each such blockID to an on-chain timestamp
+// equal to ts (satisfying AllVerifiedHeadsBoundedByTimestamp) with empty BlockLogs
+// (no executing messages, so cross-validity holds vacuously).
+func TestOraclePathEndToEnd(t *testing.T) {
+	// t.Parallel() is called by newInteropTestHarness below.
+	const activation = uint64(100)
+	const cycles = 3
+	chain10 := eth.ChainIDFromUInt64(10)
+
+	h := newInteropTestHarness(t).
+		WithActivation(activation).
+		WithChain(10, nil).
+		Build()
+
+	h.interop.verifyFn = func(ts uint64, blocks map[eth.ChainID]eth.BlockID, _ map[eth.ChainID]eth.BlockID, _ *frontierVerificationView) (Result, error) {
+		return Result{Timestamp: ts, L1Inclusion: eth.BlockID{Number: 1}, L2Heads: blocks}, nil
+	}
+	h.interop.cycleVerifyFn = func(ts uint64, blocks map[eth.ChainID]eth.BlockID, _ *frontierVerificationView) (Result, error) {
+		return Result{}, nil
+	}
+
+	for i := 0; i < cycles; i++ {
+		made, err := h.interop.progressAndRecord()
+		require.NoError(t, err)
+		require.True(t, made, "cycle %d should advance", i)
+	}
+	AssertInvariants(t, h.interop)
+
+	// Verify the expected range is committed.
+	lastTS, ok := h.interop.verifiedDB.LastTimestamp()
+	require.True(t, ok)
+	require.Equal(t, activation+uint64(cycles), lastTS)
+
+	// Build stub oracle: for each verified ts, populate BlockInfo with
+	// timestamp == ts and empty BlockLogs (no exec msgs).
+	oracle := newStubOracle()
+	oracle.blockTimes[chain10] = 1
+	snapshot, err := h.interop.verifiedDB.allVerified()
+	require.NoError(t, err)
+	for ts, vr := range snapshot {
+		blockID, ok := vr.L2Heads[chain10]
+		require.True(t, ok, "chain10 missing from verified heads at ts %d", ts)
+		oracle.setBlockInfo(chain10, blockID, &mockBlockInfo{
+			hash:      blockID.Hash,
+			number:    blockID.Number,
+			timestamp: ts,
+		})
+		oracle.setBlockLogs(chain10, blockID, nil) // no executing messages
+	}
+
+	t.Run("nil oracle skips oracle-dependent conjuncts on real Interop (R5)", func(t *testing.T) {
+		t.Parallel()
+		require.NoError(t, CheckAllVerifiedCrossValid(h.interop, nil))
+		require.NoError(t, CheckResultIsCrossValid(h.interop, nil, Result{
+			Timestamp: lastTS,
+			L2Heads:   map[eth.ChainID]eth.BlockID{chain10: eth.BlockID{Number: lastTS, Hash: common.BigToHash(big.NewInt(int64(lastTS)))}},
+		}))
+	})
+
+	t.Run("stub oracle: CheckAllVerifiedCrossValid passes on healthy fixture", func(t *testing.T) {
+		t.Parallel()
+		require.NoError(t, CheckAllVerifiedCrossValid(h.interop, oracle))
+	})
+
+	t.Run("stub oracle: CheckResultIsCrossValid passes on last verified entry", func(t *testing.T) {
+		t.Parallel()
+		vr, err := h.interop.verifiedDB.Get(lastTS)
+		require.NoError(t, err)
+		result := Result{
+			Timestamp:    vr.Timestamp,
+			L1Inclusion:  vr.L1Inclusion,
+			L2Heads:      vr.L2Heads,
+			InvalidHeads: nil,
+		}
+		require.NoError(t, CheckResultIsCrossValid(h.interop, oracle, result))
+	})
+
+	t.Run("stub oracle: CheckResultIsCrossValid fails on invalidHeads != 0", func(t *testing.T) {
+		t.Parallel()
+		vr, err := h.interop.verifiedDB.Get(lastTS)
+		require.NoError(t, err)
+		bad := Result{
+			Timestamp:    vr.Timestamp,
+			L1Inclusion:  vr.L1Inclusion,
+			L2Heads:      vr.L2Heads,
+			InvalidHeads: map[eth.ChainID]InvalidHead{chain10: {}},
+		}
+		err = CheckResultIsCrossValid(h.interop, oracle, bad)
+		require.ErrorContains(t, err, "conjunct (0b)")
 	})
 }
