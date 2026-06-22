@@ -855,8 +855,8 @@ func TestTransitionAsserts(t *testing.T) {
 		"AssertPlanConsistentWithLogs": func(ft dafnyT) {
 			AssertPlanConsistentWithLogs(ft, nil, RewindPlan{}, dafnyChainID(1))
 		},
-		"AssertRewoundVerifiedDB": func(ft dafnyT) { AssertRewoundVerifiedDB(ft, nil, RewindPlan{}) },
-		"AssertRewoundLogsDB":        func(ft dafnyT) { AssertRewoundLogsDB(ft, nil, RewindPlan{}, dafnyChainID(1)) },
+		"AssertRewoundVerifiedDB":         func(ft dafnyT) { AssertRewoundVerifiedDB(ft, nil, RewindPlan{}) },
+		"AssertRewoundLogsDB":             func(ft dafnyT) { AssertRewoundLogsDB(ft, nil, RewindPlan{}, dafnyChainID(1)) },
 		"AssertPlanConsistentWithAllLogs": func(ft dafnyT) { AssertPlanConsistentWithAllLogs(ft, nil, RewindPlan{}) },
 		"AssertRewoundAllLogsDB":          func(ft dafnyT) { AssertRewoundAllLogsDB(ft, nil, RewindPlan{}) },
 		"AssertTransitionConsistentWithVerified": func(ft dafnyT) {
