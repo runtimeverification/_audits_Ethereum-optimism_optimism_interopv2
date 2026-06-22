@@ -52,6 +52,10 @@ func sortedLogsDBChainIDs(i *Interop) []eth.ChainID {
 //	(7) forall ts in verifiedDB.db: db[ts].l2Heads.Keys == CHAIN_IDS
 //	(8) pendingTransition.Some? ==>
 //	    ValidPendingTransition(GetPendingTransition().value)
+//	(9) i.messageExpiryWindow == MESSAGE_EXPIRY_WINDOW (always-on; D12)
+//	(10) BlockSealsMatchOnChainTimestamps() (oracle-dependent; skipped without oracle)
+//	(11) AllVerifiedHeadsBoundedByTimestamp() (oracle-dependent; skipped without oracle)
+//	(12) VerifiedHeadsAreHighestBlocksUpToTimestamp() (logsDB-only; always-on)
 func CheckInteropValid(i *Interop) error {
 	const pred = "Interop.dfy Valid()"
 	if i == nil {
@@ -112,6 +116,31 @@ func CheckInteropValid(i *Interop) error {
 		if err := CheckValidPendingTransition(p, *pending); err != nil {
 			errs = append(errs, fmt.Errorf("%s conjunct (8): stored pending transition invalid: %w", pred, err))
 		}
+	}
+
+	// Conjunct (9): messageExpiryWindow == MESSAGE_EXPIRY_WINDOW (always-on).
+	// modelParamsFromInterop derives MessageExpiryWindow from i.messageExpiryWindow
+	// for use by other checkers; here we verify the field holds the protocol
+	// constant (defaultMessageExpiryWindow), which New() enforces for zero inputs.
+	if i.messageExpiryWindow != defaultMessageExpiryWindow {
+		errs = append(errs, violation(pred, "9",
+			"messageExpiryWindow %d != MESSAGE_EXPIRY_WINDOW %d",
+			i.messageExpiryWindow, defaultMessageExpiryWindow))
+	}
+
+	// Conjunct (10): BlockSealsMatchOnChainTimestamps() — oracle-dependent; skips without oracle (D12, R5).
+	if err := CheckBlockSealsMatchOnChainTimestamps(i, nil); err != nil {
+		errs = append(errs, fmt.Errorf("%s conjunct (10): %w", pred, err))
+	}
+
+	// Conjunct (11): AllVerifiedHeadsBoundedByTimestamp() — oracle-dependent; skips without oracle (D12, R5).
+	if err := CheckAllVerifiedHeadsBoundedByTimestamp(i, nil); err != nil {
+		errs = append(errs, fmt.Errorf("%s conjunct (11): %w", pred, err))
+	}
+
+	// Conjunct (12): VerifiedHeadsAreHighestBlocksUpToTimestamp() — logsDB-only; always-on.
+	if err := CheckVerifiedHeadsAreHighestBlocksUpToTimestamp(i); err != nil {
+		errs = append(errs, fmt.Errorf("%s conjunct (12): %w", pred, err))
 	}
 
 	return errors.Join(errs...)
@@ -316,4 +345,83 @@ func CheckAllDBsInSync(i *Interop) error {
 func AssertAllDBsInSync(t dafnyT, i *Interop) {
 	t.Helper()
 	failOnViolation(t, CheckAllDBsInSync(i))
+}
+
+// CheckVerifiedHeadsAreHighestBlocksUpToTimestamp mirrors
+// VerifiedHeadsAreHighestBlocksUpToTimestamp() in
+// op-supernode/dafny-models/Interop.dfy: for every timestamp ts stored in
+// the verifiedDB, the verified l2Heads cover exactly the logsDB chain set,
+// and for every chain, every sealed block strictly above the verified head
+// number has timestamp > ts.  Reads only verifiedDB and logsDBs; no oracle
+// required. Conjuncts, quantified over ts in verifiedDB.db:
+//
+//	(0) i is non-nil, allVerified succeeds (mapping requirement)
+//	(A) verifiedDB.Get(ts).l2Heads.Keys == logsDBs.Keys
+//	(B) forall chainID in verifiedHeads.Keys, forall n > verifiedHead.number:
+//	    FindSealedBlock(n).Some? ==> seal.timestamp > ts
+func CheckVerifiedHeadsAreHighestBlocksUpToTimestamp(i *Interop) error {
+	const pred = "Interop.dfy VerifiedHeadsAreHighestBlocksUpToTimestamp()"
+	if i == nil {
+		return violation(pred, "0", "Interop is nil")
+	}
+	if i.verifiedDB == nil || i.verifiedDB.db == nil {
+		return violation(pred, "0", "VerifiedDB has no underlying store")
+	}
+	snapshot, err := i.verifiedDB.allVerified()
+	if err != nil {
+		return violation(pred, "0", "enumerate verified bucket: %v", err)
+	}
+
+	logsDBKeys := make(map[eth.ChainID]struct{}, len(i.logsDBs))
+	for id := range i.logsDBs {
+		logsDBKeys[id] = struct{}{}
+	}
+
+	var errs []error
+	for _, ts := range slices.Sorted(maps.Keys(snapshot)) {
+		verifiedHeads := snapshot[ts].L2Heads
+		// Conjunct (A): l2Heads.Keys == logsDBs.Keys.
+		if err := checkChainIDCoverage(pred, "A",
+			fmt.Sprintf("verifiedDB.Get(%d).l2Heads", ts), verifiedHeads, logsDBKeys); err != nil {
+			errs = append(errs, err)
+			continue // can't check (B) without per-chain verified heads
+		}
+		// Conjunct (B): for each chain, sealed blocks strictly above the
+		// verified head number must have timestamp > ts.
+		for _, chainID := range sortedLogsDBChainIDs(i) {
+			head, ok := verifiedHeads[chainID]
+			if !ok {
+				continue // already reported by (A)
+			}
+			ldb := i.logsDBs[chainID]
+			latest, hasLatest := ldb.LatestSealedBlock()
+			if !hasLatest || latest.Number <= head.Number {
+				continue // no blocks above verified head
+			}
+			for n := head.Number + 1; n <= latest.Number; n++ {
+				seal, found, ferr := findSealedOption(ldb, n)
+				if ferr != nil {
+					errs = append(errs, violation(pred, "0",
+						"ts %d chain %s FindSealedBlock(%d) failed: %v", ts, chainID, n, ferr))
+					break
+				}
+				if found && seal.Timestamp <= ts {
+					errs = append(errs, violation(pred, "B",
+						"ts %d chain %s: sealed block %d has timestamp %d <= verified ts",
+						ts, chainID, n, seal.Timestamp))
+				}
+				if n == latest.Number {
+					break // guard against uint64 wrap
+				}
+			}
+		}
+	}
+	return errors.Join(errs...)
+}
+
+// AssertVerifiedHeadsAreHighestBlocksUpToTimestamp fails t when
+// CheckVerifiedHeadsAreHighestBlocksUpToTimestamp reports violations.
+func AssertVerifiedHeadsAreHighestBlocksUpToTimestamp(t dafnyT, i *Interop) {
+	t.Helper()
+	failOnViolation(t, CheckVerifiedHeadsAreHighestBlocksUpToTimestamp(i))
 }

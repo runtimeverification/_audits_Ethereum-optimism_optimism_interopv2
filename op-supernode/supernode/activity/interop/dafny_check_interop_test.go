@@ -17,6 +17,7 @@ func dafnyTestInterop(t *testing.T) *Interop {
 	t.Helper()
 	return &Interop{
 		activationTimestamp: 1000,
+		messageExpiryWindow: defaultMessageExpiryWindow,
 		chains: map[eth.ChainID]cc.InteropChain{
 			dafnyChainID(1): nil,
 			dafnyChainID(2): nil,
@@ -355,6 +356,87 @@ func TestCheckAllDBsInSync(t *testing.T) {
 		require.ErrorContains(t, err, "chain 2:")
 		require.ErrorContains(t, err, "conjunct (S3)")
 		require.NotContains(t, err.Error(), "chain 1:")
+	})
+}
+
+// TestCheckInteropValidConjunct9 covers the messageExpiryWindow == MESSAGE_EXPIRY_WINDOW
+// conjunct added in the model-update reconciliation (T10).
+func TestCheckInteropValidConjunct9(t *testing.T) {
+	t.Parallel()
+
+	t.Run("pass: default expiry window", func(t *testing.T) {
+		t.Parallel()
+		require.NoError(t, CheckInteropValid(dafnyTestInterop(t)))
+	})
+
+	t.Run("conjunct 9: wrong expiry window", func(t *testing.T) {
+		t.Parallel()
+		i := dafnyTestInterop(t)
+		i.messageExpiryWindow = 1 // not the protocol constant
+		err := CheckInteropValid(i)
+		require.ErrorContains(t, err, "conjunct (9)")
+		require.ErrorContains(t, err, "messageExpiryWindow")
+	})
+}
+
+// TestCheckInteropValidConjuncts10And11Skip covers the oracle-dependent
+// conjuncts (10 and 11) that always skip without an oracle (R5, D12).
+func TestCheckInteropValidConjuncts10And11Skip(t *testing.T) {
+	t.Parallel()
+	// With a nil oracle CheckInteropValid must never report a violation for
+	// conjuncts 10 or 11 — even on a fresh (otherwise-valid) instance.
+	i := dafnyTestInterop(t)
+	err := CheckInteropValid(i)
+	require.NoError(t, err)
+	// Explicit skip path for the two oracle-dependent helpers.
+	require.NoError(t, CheckBlockSealsMatchOnChainTimestamps(i, nil))
+	require.NoError(t, CheckAllVerifiedHeadsBoundedByTimestamp(i, nil))
+}
+
+// TestCheckVerifiedHeadsAreHighestBlocksUpToTimestamp covers conjunct 12 added
+// in the model-update reconciliation (T10).
+func TestCheckVerifiedHeadsAreHighestBlocksUpToTimestamp(t *testing.T) {
+	t.Parallel()
+
+	t.Run("pass: fresh instance with no verified entries", func(t *testing.T) {
+		t.Parallel()
+		require.NoError(t, CheckVerifiedHeadsAreHighestBlocksUpToTimestamp(dafnyTestInterop(t)))
+	})
+
+	t.Run("pass: synced instance — no blocks above verified heads", func(t *testing.T) {
+		t.Parallel()
+		require.NoError(t, CheckVerifiedHeadsAreHighestBlocksUpToTimestamp(dafnySyncedInterop(t)))
+	})
+
+	t.Run("conjunct 0: nil Interop", func(t *testing.T) {
+		t.Parallel()
+		err := CheckVerifiedHeadsAreHighestBlocksUpToTimestamp(nil)
+		require.ErrorContains(t, err, "conjunct (0)")
+	})
+
+	t.Run("conjunct A: l2Heads.Keys != logsDBs.Keys", func(t *testing.T) {
+		t.Parallel()
+		i := dafnyTestInterop(t)
+		// Commit a result that covers only chain 1, not chain 2.
+		require.NoError(t, i.verifiedDB.Commit(dafnyVerifiedResult(1000, map[uint64]uint64{1: 100})))
+		err := CheckVerifiedHeadsAreHighestBlocksUpToTimestamp(i)
+		require.ErrorContains(t, err, "conjunct (A)")
+	})
+
+	t.Run("conjunct B: sealed block above verified head has timestamp <= ts", func(t *testing.T) {
+		t.Parallel()
+		i := dafnySyncedInterop(t) // verified heads: chain1@100, chain2@200 at ts=1002
+		// Add a sealed block at number 103 (above verified head 102) with
+		// timestamp == 1002 (not > 1002) to violate the conjunct.
+		mockLogsDBFor(t, i, 1).seals[103] = suptypes.BlockSeal{
+			Hash:      common.HexToHash("0xbb"),
+			Number:    103,
+			Timestamp: 1002, // <= ts=1002, violates the predicate
+		}
+		mockLogsDBFor(t, i, 1).latest = eth.BlockID{Hash: common.HexToHash("0xbb"), Number: 103}
+		err := CheckVerifiedHeadsAreHighestBlocksUpToTimestamp(i)
+		require.ErrorContains(t, err, "conjunct (B)")
+		require.ErrorContains(t, err, "timestamp 1002 <= verified ts")
 	})
 }
 
